@@ -2,10 +2,8 @@
 #
 # Required once in the Codemagic UI (never committed here):
 #   1. Team integration "App Store Connect" API key named: cadence_asc
-#   2. Environment group "cadence_public" with the PUBLIC app values:
-#        EXPO_PUBLIC_SUPABASE_URL
+#   2. Environment group "cadence_public" with one PUBLIC value:
 #        EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-#        EXPO_PUBLIC_MUSIC_SERVICE_URL   (must be a public https URL)
 #      No service-role or provider keys belong in this group.
 workflows:
   ios-testflight:
@@ -21,6 +19,8 @@ workflows:
         BUNDLE_ID: com.cadencelabs.mobile
         APP_STORE_APPLE_ID_LOOKUP: "true"
         EXPO_PUBLIC_APP_ENV: preview
+        EXPO_PUBLIC_SUPABASE_URL: https://rxoeyyiiwgnyjdtjouwy.supabase.co
+        EXPO_PUBLIC_MUSIC_SERVICE_URL: https://music-service-production-5918.up.railway.app
         # Audio Lab is enabled only in this internal Stage A build.
         EXPO_PUBLIC_AUDIO_LAB: "1"
       node: 22
