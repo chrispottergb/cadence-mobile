@@ -206,7 +206,7 @@ function GenProgress({ job }: { job: GenerationJob }) {
         <View testID="gen-progress" style={{ width: `${Math.round(p.fraction * 100)}%`, height: '100%', backgroundColor: job.state === 'FAILED' ? colors.danger : colors.accent }} />
       </View>
       <Text muted>
-        {fmt(p.elapsedSeconds)} elapsed{done ? '' : ` · ${formatRemaining(p)}`}
+        {fmt(p.elapsedSeconds)} elapsed{done ? '' : ` Â· ${formatRemaining(p)}`}
       </Text>
       {!done ? <Text muted>You can leave the app. The music keeps generating and will be here when you come back.</Text> : null}
     </View>

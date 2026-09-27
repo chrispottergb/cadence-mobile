@@ -26,6 +26,31 @@ export default function Library() {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<Track | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  // One player for the whole screen: switching tracks replaces its source
+  // instead of creating and releasing players (which crashed on iOS).
+  const player = useAudioPlayer(null);
+  const status = useAudioPlayerStatus(player);
+  const [current, setCurrent] = useState<string | null>(null);
+
+  const toggle = useCallback(
+    async (id: string) => {
+      if (current === id) {
+        if (status.playing) player.pause();
+        else player.play();
+        return;
+      }
+      const r = await getPlaybackUrl(id);
+      if (!r.ok) {
+        setError('Could not play that track. Try again.');
+        return;
+      }
+      player.replace({ uri: r.data.url });
+      setCurrent(id);
+      player.play();
+    },
+    [current, status.playing, player],
+  );
+  const playing = (id: string) => current === id && status.playing;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,6 +107,8 @@ export default function Library() {
                     <TrackRow
                       key={id}
                       t={t}
+                      playing={playing(id)}
+                      onToggle={toggle}
                       action={{
                         label: 'Remove',
                         onPress: () => void removeFromPlaylist(p.id, id).then(load),
@@ -99,7 +126,7 @@ export default function Library() {
         {!loading && tracks.length === 0 ? <Text muted>No music yet. Generated tracks appear here.</Text> : null}
         {tracks.map((t) => (
           <Card key={t.id}>
-            <TrackRow t={t} action={{ label: '+', onPress: () => setAdding(t) }} />
+            <TrackRow t={t} playing={playing(t.id)} onToggle={toggle} action={{ label: '+', onPress: () => setAdding(t) }} />
           </Card>
         ))}
       </ScrollView>
@@ -109,22 +136,8 @@ export default function Library() {
   );
 }
 
-function TrackRow({ t, action }: { t: Track; action: { label: string; onPress: () => void } }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const player = useAudioPlayer(url ? { uri: url } : null);
-  const status = useAudioPlayerStatus(player);
-  const toggle = async () => {
-    if (!url) {
-      const r = await getPlaybackUrl(t.id);
-      if (r.ok) {
-        setUrl(r.data.url);
-        setTimeout(() => player.play(), 300);
-      }
-      return;
-    }
-    if (status.playing) player.pause();
-    else player.play();
-  };
+function TrackRow({ t, action, playing, onToggle }: { t: Track; action: { label: string; onPress: () => void }; playing: boolean; onToggle: (id: string) => void }) {
+  const toggle = () => onToggle(t.id);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
       <Pressable
@@ -139,7 +152,7 @@ function TrackRow({ t, action }: { t: Track; action: { label: string; onPress: (
           justifyContent: 'center',
         }}
       >
-        <Text style={{ color: colors.bg, fontWeight: '700' }}>{status.playing ? '||' : '▶'}</Text>
+        <Text style={{ color: colors.bg, fontWeight: '700' }}>{playing ? '||' : '▶'}</Text>
       </Pressable>
       <View style={{ flex: 1 }}>
         <Text numberOfLines={1}>{t.title ?? `Take ${t.label}`}</Text>
