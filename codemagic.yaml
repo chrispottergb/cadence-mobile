@@ -1,0 +1,59 @@
+# Codemagic: iOS internal TestFlight build (Phase 3 Stage A device testing).
+#
+# Required once in the Codemagic UI (never committed here):
+#   1. Team integration "App Store Connect" API key named: cadence_asc
+#   2. Environment group "cadence_public" with the PUBLIC app values:
+#        EXPO_PUBLIC_SUPABASE_URL
+#        EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+#        EXPO_PUBLIC_MUSIC_SERVICE_URL   (must be a public https URL)
+#      No service-role or provider keys belong in this group.
+workflows:
+  ios-testflight:
+    name: iOS TestFlight (internal)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: cadence_asc
+    environment:
+      groups:
+        - cadence_public
+      vars:
+        BUNDLE_ID: com.cadencelabs.mobile
+        APP_STORE_APPLE_ID_LOOKUP: "true"
+        EXPO_PUBLIC_APP_ENV: preview
+        # Audio Lab is enabled only in this internal Stage A build.
+        EXPO_PUBLIC_AUDIO_LAB: "1"
+      node: 22
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.cadencelabs.mobile
+    triggering:
+      events: []
+    scripts:
+      - name: Install dependencies
+        script: npm ci
+      - name: Checks
+        script: npm run check
+      - name: Generate native iOS project
+        script: npx expo prebuild --platform ios --clean --no-install
+      - name: Install pods
+        script: cd ios && pod install
+      - name: Apply signing profiles
+        script: xcode-project use-profiles
+      - name: Set build number
+        script: |
+          LATEST=$(app-store-connect get-latest-testflight-build-number --bundle-id "$BUNDLE_ID" 2>/dev/null || echo 0)
+          cd ios && agvtool new-version -all $((LATEST + 1))
+      - name: Build IPA
+        script: |
+          WS=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WS" .xcworkspace)
+          xcode-project build-ipa --workspace "$WS" --scheme "$SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
