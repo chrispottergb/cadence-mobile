@@ -1,7 +1,7 @@
 # Codemagic: iOS internal TestFlight build (Phase 3 Stage A device testing).
 #
 # Required once in the Codemagic UI (never committed here):
-#   1. Team integration "App Store Connect" API key named: cadence_asc
+#   1. Team integration "App Store Connect" API key named: codemagic_appstore_connect (shared team key)
 # Only PUBLIC client values live in this file (they ship inside the app).
 # No service-role or provider keys may ever be added here.
 workflows:
@@ -10,7 +10,7 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: cadence_asc
+      app_store_connect: codemagic_appstore_connect
     environment:
       vars:
         BUNDLE_ID: com.cadencelabs.mobile
