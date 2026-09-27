@@ -2,7 +2,7 @@ import * as Crypto from 'expo-crypto';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ScrollView, Switch, View } from 'react-native';
+import { AppState, ScrollView, Switch, View } from 'react-native';
 
 import { listMyGyms } from '@/data/gyms';
 import { useExperience } from '@/experience/store';
@@ -18,6 +18,8 @@ import {
   setLifecycle,
   TERMINAL,
 } from '@/music/client';
+import { clearActiveJob, loadActiveJob, saveActiveJob } from '@/music/activeJob';
+import { estimateProgress, formatRemaining } from '@/music/progress';
 import { Button, Card, colors, Field, Screen, space, Text } from '@/ui';
 
 /**
@@ -47,13 +49,32 @@ export default function Generator() {
     if (selected === 'instructor') void listMyGyms().then((r) => setGymId(r.gyms[0]?.id ?? null));
   }, [selected]);
 
+  // Pick up a generation that was running when the user left or closed the app.
+  useEffect(() => {
+    void loadActiveJob().then((id) => {
+      if (id) void getGeneration(id).then((r) => (r.ok ? setJob(r.data) : void clearActiveJob()));
+    });
+  }, []);
+
   // Poll OUR service until the job is terminal. Never the provider.
   useEffect(() => {
-    if (!job || TERMINAL.includes(job.state)) return;
+    if (!job) return;
+    if (TERMINAL.includes(job.state)) {
+      void clearActiveJob();
+      return;
+    }
     const t = setTimeout(() => {
       void getGeneration(job.id).then((r) => r.ok && setJob(r.data));
     }, 3000);
     return () => clearTimeout(t);
+  }, [job]);
+
+  // Refresh at once when the app comes back to the foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active' && job && !TERMINAL.includes(job.state)) void getGeneration(job.id).then((r) => r.ok && setJob(r.data));
+    });
+    return () => sub.remove();
   }, [job]);
 
   const generate = useCallback(async () => {
@@ -77,6 +98,7 @@ export default function Generator() {
     setBusy(false);
     if (r.ok) {
       setJob(r.data);
+      void saveActiveJob(r.data.id);
       pressKey.current = null; // the next press is a new intent
     } else if (r.error !== 'network') {
       pressKey.current = null; // definitive answer; a new press starts fresh
@@ -139,9 +161,7 @@ export default function Generator() {
             <Text variant="label" muted>
               Status
             </Text>
-            <Text testID="gen-state" variant="title">
-              {job.state}
-            </Text>
+            <GenProgress job={job} />
             {job.candidates.map((c) => (
               <CandidateRow key={c.id} c={c} onLifecycle={onLifecycle} />
             ))}
@@ -152,6 +172,31 @@ export default function Generator() {
         <Button title="Back" variant="ghost" onPress={() => router.back()} />
       </ScrollView>
     </Screen>
+  );
+}
+
+function GenProgress({ job }: { job: GenerationJob }) {
+  const [now, setNow] = useState(() => Date.now());
+  const done = TERMINAL.includes(job.state);
+  useEffect(() => {
+    if (done) return;
+    const i = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(i);
+  }, [done]);
+  const p = estimateProgress(job, now);
+  return (
+    <View style={{ gap: space.xs }}>
+      <Text testID="gen-state" variant="title">
+        {p.label}
+      </Text>
+      <View style={{ height: 10, borderRadius: 5, backgroundColor: colors.border, overflow: 'hidden' }}>
+        <View testID="gen-progress" style={{ width: `${Math.round(p.fraction * 100)}%`, height: '100%', backgroundColor: job.state === 'FAILED' ? colors.danger : colors.accent }} />
+      </View>
+      <Text muted>
+        {fmt(p.elapsedSeconds)} elapsed{done ? '' : ` · ${formatRemaining(p)}`}
+      </Text>
+      {!done ? <Text muted>You can leave the app. The music keeps generating and will be here when you come back.</Text> : null}
+    </View>
   );
 }
 

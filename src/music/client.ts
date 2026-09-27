@@ -45,6 +45,7 @@ export interface GenerationJob {
   id: string;
   state: JobState;
   errorCode: string | null;
+  createdAt?: string | null;
   candidates: Candidate[];
 }
 
