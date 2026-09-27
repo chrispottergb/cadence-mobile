@@ -1,11 +1,12 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ScrollView, View } from 'react-native';
+import { Platform, ScrollView, Share, View } from 'react-native';
+import * as Application from 'expo-application';
 
 import { clearLabCache, cueSeconds, listPlayable, loadCueAssets, type PlayableTrack, resolveTrack } from '@/audiolab/assets';
 import type { EngineSnapshot, LabEngine } from '@/audiolab/engine';
 import { GraphEngine } from '@/audiolab/graphEngine';
-import { labEvents, record, subscribeLab, summarize } from '@/audiolab/metrics';
+import { clearLab, exportRun, jsHeapBytes, labEvents, record, subscribeLab, summarize } from '@/audiolab/metrics';
 import { PlayerEngine } from '@/audiolab/playerEngine';
 import { type CueSpec, expandCues, formatClock, placeTracks, resolveCollisions, type TimelineTrack, totalDuration } from '@/audiolab/timeline';
 import { Button, Card, colors, Screen, space, Text } from '@/ui';
@@ -84,8 +85,30 @@ export default function AudioLab() {
       record('lab', 'playable', { count: t.length });
     });
     const i = setInterval(() => engine.current && setSnap(engine.current.snapshot()), 250);
+    // Heartbeat for drift and memory over long sessions: engine position vs wall clock.
+    let playStart: { wall: number; pos: number } | null = null;
+    const hb = setInterval(() => {
+      const e = engine.current;
+      if (!e) return;
+      const sn = e.snapshot();
+      if (sn.state !== 'PLAYING') {
+        playStart = null;
+        return;
+      }
+      playStart ??= { wall: Date.now(), pos: sn.positionSeconds };
+      const wall = (Date.now() - playStart.wall) / 1000;
+      record('lab', 'heartbeat', {
+        engine: e.name,
+        position: Number(sn.positionSeconds.toFixed(3)),
+        wallElapsed: Number(wall.toFixed(3)),
+        driftMs: Math.round((sn.positionSeconds - playStart.pos - wall) * 1000),
+        heapBytes: jsHeapBytes(),
+        route: sn.route,
+      });
+    }, 30_000);
     return () => {
       clearInterval(i);
+      clearInterval(hb);
       void engine.current?.dispose();
     };
   }, []);
@@ -203,6 +226,31 @@ export default function AudioLab() {
           <Text muted>Logged events: {events.length}</Text>
         </Card>
 
+        <Card style={{ gap: space.sm }}>
+          <Text variant="label" muted>
+            Test log
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+            {['BT on', 'BT off', 'Locked', 'Unlocked', 'Call', 'Other app', 'Network off', 'Network on', 'Heard cue'].map((m) => (
+              <Button key={m} title={m} variant="secondary" onPress={() => record('tester', 'mark', { note: m, position: Number((engine.current?.snapshot().positionSeconds ?? 0).toFixed(3)) })} />
+            ))}
+          </View>
+          <Button
+            testID="lab-share"
+            title="Share results"
+            onPress={() =>
+              void Share.share({
+                message: exportRun({
+                  os: Platform.OS,
+                  osVersion: String(Platform.Version),
+                  build: Application.nativeBuildVersion ?? null,
+                  version: Application.nativeApplicationVersion ?? null,
+                }),
+              })
+            }
+          />
+          <Button title="Clear log" variant="ghost" onPress={clearLab} />
+        </Card>
         <Button title="Clear lab audio cache" variant="ghost" onPress={() => void clearLabCache()} />
         <Button title="Back" variant="ghost" onPress={() => router.back()} />
       </ScrollView>

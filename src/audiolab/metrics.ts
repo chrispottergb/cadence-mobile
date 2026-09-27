@@ -42,3 +42,20 @@ export function summarize(values: number[]) {
     max: Math.round(Math.max(...s.map(Math.abs)) * 10) / 10,
   };
 }
+
+export function clearLab(): void {
+  events.splice(0, events.length);
+  listeners.forEach((l) => l());
+}
+
+/** JavaScript heap size in bytes when the Hermes runtime exposes it (null otherwise). */
+export function jsHeapBytes(): number | null {
+  const h = (globalThis as { HermesInternal?: { getInstrumentedStats?: () => Record<string, number> } }).HermesInternal;
+  const s = h?.getInstrumentedStats?.();
+  return s && typeof s.js_heapSize === 'number' ? s.js_heapSize : null;
+}
+
+/** The full run as JSON for the Stage A report: device, build, events. No user data. */
+export function exportRun(device: Record<string, string | number | null>): string {
+  return JSON.stringify({ exportedAt: new Date().toISOString(), device, count: events.length, events });
+}
