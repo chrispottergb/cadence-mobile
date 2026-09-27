@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 
@@ -12,6 +13,7 @@ import { Button, Card, Field, Screen, space, Text } from '@/ui';
  * probe against the Music Service to prove the app-to-service path.
  */
 export default function GymTab() {
+  const router = useRouter();
   const { session } = useSession();
   const [gyms, setGyms] = useState<Gym[]>([]);
   const [email, setEmail] = useState('');
@@ -59,6 +61,9 @@ export default function GymTab() {
           </Text>
           <Button title="Check connection" variant="secondary" onPress={probe} />
         </Card>
+        {process.env.EXPO_PUBLIC_AUDIO_LAB === '1' ? (
+          <Button testID="open-audio-lab" title="Audio Lab (development)" variant="secondary" onPress={() => router.push('/audio-lab')} />
+        ) : null}
       </ScrollView>
     </Screen>
   );
