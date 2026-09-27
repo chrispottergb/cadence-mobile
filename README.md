@@ -16,7 +16,7 @@ src/auth/           Supabase client, session store
 src/experience/     experience resolver + switcher (instructor / student / parent)
 src/data/           typed data access (gyms, memberships, guardian links)
 src/ui/             design primitives (tokens, Screen, Text, Button)
-supabase/           migrations + RLS tests for the Cadence Supabase project
+(database migrations and RLS tests live in cadence-music-service/supabase)
 ```
 
 ## Scripts
