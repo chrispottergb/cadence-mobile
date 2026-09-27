@@ -54,4 +54,5 @@ workflows:
     publishing:
       app_store_connect:
         auth: integration
-        submit_to_testflight: true
+        # Internal testers only: no external beta review submission.
+        submit_to_testflight: false
