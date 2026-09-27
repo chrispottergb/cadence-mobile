@@ -6,6 +6,9 @@ import { appleSignInAvailable, signInWithApple } from '@/auth/apple';
 import { sendEmailCode } from '@/auth/session';
 import { Button, Field, Screen, space, Text } from '@/ui';
 
+/** Apple sign-in stays hidden until the Supabase Apple provider is configured. */
+const APPLE_ENABLED = process.env.EXPO_PUBLIC_APPLE_SIGNIN === '1';
+
 export default function SignIn() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -14,7 +17,7 @@ export default function SignIn() {
   const [apple, setApple] = useState(false);
 
   useEffect(() => {
-    void appleSignInAvailable().then(setApple);
+    if (APPLE_ENABLED) void appleSignInAvailable().then(setApple);
   }, []);
 
   const submit = async () => {

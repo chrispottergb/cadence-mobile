@@ -21,6 +21,8 @@ workflows:
         EXPO_PUBLIC_MUSIC_SERVICE_URL: https://music-service-production-5918.up.railway.app
         # Audio Lab is enabled only in this internal Stage A build.
         EXPO_PUBLIC_AUDIO_LAB: "1"
+        # Apple sign-in hidden until the Supabase Apple provider is set up.
+        EXPO_PUBLIC_APPLE_SIGNIN: "0"
       node: 22
       xcode: latest
       cocoapods: default
