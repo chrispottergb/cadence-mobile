@@ -42,7 +42,7 @@ export default function RootLayout() {
     if (!experience.loaded) return;
     const target = experience.selected ? `/(${experience.selected})` : '/onboarding';
     const inTarget = experience.selected ? top === `(${experience.selected})` : top === 'onboarding';
-    if (!inTarget && top !== 'switch') router.replace(target as never);
+    if (!inTarget && top !== 'switch' && top !== 'generator') router.replace(target as never);
   }, [session.ready, session.session, experience.loaded, experience.selected, segments, router]);
 
   const booting = !session.ready || (session.session && !experience.loaded);
@@ -61,6 +61,7 @@ export default function RootLayout() {
             <Stack.Screen name="(student)" />
             <Stack.Screen name="(parent)" />
             <Stack.Screen name="switch" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="generator" />
           </Stack>
         )}
       </SafeAreaProvider>
