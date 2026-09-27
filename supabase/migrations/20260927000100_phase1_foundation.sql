@@ -12,7 +12,7 @@
 --   * Quotas and grants have a subject (profile OR gym), so gym class music
 --     and student personal music draw from separate allowances.
 --
--- Reversible: see 20260927000100_phase1_foundation_down.sql
+-- Reversible: see supabase/rollback/20260927000100_phase1_foundation_down.sql
 
 create extension if not exists pgcrypto;
 
@@ -393,8 +393,11 @@ create policy profiles_update_own on public.profiles
 -- no insert (trigger) and no delete (auth.users cascade) for clients.
 
 -- gyms
+-- Members see their gyms. The owner clause is required because Postgres checks
+-- the read policy on INSERT ... RETURNING before the AFTER trigger has created
+-- the owner's membership row.
 create policy gyms_select_member on public.gyms
-  for select to authenticated using (public.is_gym_member(id));
+  for select to authenticated using (owner_profile_id = auth.uid() or public.is_gym_member(id));
 create policy gyms_insert_self_owner on public.gyms
   for insert to authenticated with check (owner_profile_id = auth.uid());
 create policy gyms_update_owner_admin on public.gyms
@@ -502,3 +505,48 @@ create policy gym_sponsorships_select on public.gym_sponsorships
     student_profile_id = auth.uid()
     or public.has_gym_role(gym_id, array['owner','admin']::public.gym_role[])
   );
+
+-- ---------------------------------------------------------------------------
+-- Table and column privileges: an explicit allow-list.
+--
+-- Row policies decide WHICH ROWS a client may touch; privileges decide WHICH
+-- OPERATIONS and WHICH COLUMNS. Nothing is inherited from platform defaults:
+-- every client capability is one line below, and anything not listed is
+-- refused before RLS is even consulted.
+--
+-- Column lists close holes row policies cannot see: without them an admin
+-- could rewrite gyms.owner_profile_id (silent ownership transfer), a student
+-- could repoint guardian_links.guardian_profile_id, and a member could move
+-- their own membership row to another gym. Ownership transfer is a future
+-- server-side action.
+-- ---------------------------------------------------------------------------
+revoke all on all tables in schema public from anon, authenticated;
+grant usage on schema public to authenticated, service_role;
+
+-- profiles: read (RLS-scoped); rename self. Rows are created by trigger.
+grant select on public.profiles to authenticated;
+grant update (display_name) on public.profiles to authenticated;
+
+-- gyms: create (as self-owner), rename, delete (owner only by RLS).
+grant select, insert, delete on public.gyms to authenticated;
+grant update (name, slug) on public.gyms to authenticated;
+
+-- gym_locations: managed by owner/admin (RLS).
+grant select, insert, delete on public.gym_locations to authenticated;
+grant update (name, timezone) on public.gym_locations to authenticated;
+
+-- gym_memberships: invite/add, role/status changes, removal (RLS-scoped).
+-- gym_id, profile_id and invited_email are immutable once written.
+grant select, insert, delete on public.gym_memberships to authenticated;
+grant update (role, status, left_at) on public.gym_memberships to authenticated;
+
+-- guardian_links: guardian proposes; either party changes status only.
+grant select, insert on public.guardian_links to authenticated;
+grant update (status) on public.guardian_links to authenticated;
+
+-- Commercial foundation: read-only to clients, written by the service role.
+grant select on public.subscriptions, public.gym_sponsorships,
+                public.entitlement_grants, public.generation_quotas to authenticated;
+
+-- The service role (server-side only, never shipped to a client) manages all.
+grant all on all tables in schema public to service_role;
