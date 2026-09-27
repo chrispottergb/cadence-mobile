@@ -39,6 +39,7 @@ export interface Candidate {
   title: string | null;
   durationSeconds: number | null;
   playable: boolean;
+  style?: string | null;
 }
 
 export interface GenerationJob {
@@ -91,6 +92,9 @@ export const fetchCapabilities = () => call<Capabilities>('/v1/music/capabilitie
  */
 export const createGeneration = (input: GenerateInput, idempotencyKey: string) =>
   call<GenerationJob>('/v1/generations', { method: 'POST', body: JSON.stringify(input), headers: { 'idempotency-key': idempotencyKey } });
+
+/** Finished generations the caller may play (own personal music + current gyms' class music). */
+export const listGenerations = () => call<{ generations: GenerationJob[] }>('/v1/generations?limit=50');
 
 export const getGeneration = (id: string) => call<GenerationJob>(`/v1/generations/${id}`);
 
