@@ -40,6 +40,8 @@ export default function Generator() {
   const [instrumental, setInstrumental] = useState(true);
   const [duration, setDuration] = useState('120');
   const [job, setJob] = useState<GenerationJob | null>(null);
+  // Earlier generations stay on screen (and keep playing) while a new one runs.
+  const [previous, setPrevious] = useState<GenerationJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const pressKey = useRef<string | null>(null);
@@ -97,6 +99,7 @@ export default function Generator() {
     );
     setBusy(false);
     if (r.ok) {
+      if (job && job.id !== r.data.id) setPrevious((p) => [job, ...p.filter((x) => x.id !== job.id)].slice(0, 5));
       setJob(r.data);
       void saveActiveJob(r.data.id);
       pressKey.current = null; // the next press is a new intent
@@ -106,11 +109,13 @@ export default function Generator() {
     } else {
       setError(describeError(r.error)); // keep the key so "Generate" retries the same intent
     }
-  }, [description, style, instrumental, duration, selected, gymId]);
+  }, [description, style, instrumental, duration, selected, gymId, job]);
 
   const onLifecycle = async (c: Candidate, l: 'selected' | 'unselected' | 'previewed') => {
     const r = await setLifecycle(c.id, l);
-    if (r.ok) setJob(r.data);
+    if (!r.ok) return;
+    if (job?.id === r.data.id) setJob(r.data);
+    else setPrevious((p) => p.map((x) => (x.id === r.data.id ? r.data : x)));
   };
 
   return (
@@ -156,18 +161,26 @@ export default function Generator() {
 
         {error ? <Text style={{ color: colors.danger }}>{error}</Text> : null}
 
-        {job ? (
-          <Card style={{ gap: space.sm }}>
-            <Text variant="label" muted>
-              Status
-            </Text>
-            <GenProgress job={job} />
-            {job.candidates.map((c) => (
+        {[...(job ? [job] : []), ...previous].map((j) => (
+          <Card key={j.id} style={{ gap: space.sm }}>
+            {j.id === job?.id ? (
+              <>
+                <Text variant="label" muted>
+                  Status
+                </Text>
+                <GenProgress job={j} />
+              </>
+            ) : (
+              <Text variant="label" muted>
+                Earlier
+              </Text>
+            )}
+            {j.candidates.map((c) => (
               <CandidateRow key={c.id} c={c} onLifecycle={onLifecycle} />
             ))}
-            {job.candidates.length === 0 && !TERMINAL.includes(job.state) ? <Text muted>Waiting for takes...</Text> : null}
+            {j.candidates.length === 0 && !TERMINAL.includes(j.state) ? <Text muted>Waiting for takes...</Text> : null}
           </Card>
-        ) : null}
+        ))}
 
         <Button title="Back" variant="ghost" onPress={() => router.back()} />
       </ScrollView>
