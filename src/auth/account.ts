@@ -1,10 +1,9 @@
 import { supabase } from './supabase';
 
 /**
- * Account deletion foundation. Deleting an auth user requires elevated
- * credentials, which never live in the app, so the app calls a server
- * endpoint. Phase 1 wires the client side and the contract; the endpoint is
- * added to the Music Service alongside the Postgres-backed job store.
+ * Account deletion. The service deletes only the signed-in caller (identity
+ * comes from the session, never from a parameter) and the app signs out ONLY
+ * after the service confirms success.
  */
 export const ACCOUNT_DELETE_PATH = '/v1/account';
 
@@ -17,11 +16,12 @@ export async function requestAccountDeletion(serviceUrl: string): Promise<string
       method: 'DELETE',
       headers: { authorization: `Bearer ${token}` },
     });
-    if (res.status === 404 || res.status === 501) return 'Account deletion is not available yet.';
-    if (!res.ok) return 'Could not delete the account. Try again.';
+    if (res.status === 409) return 'You own a gym. Transfer or close the gym before deleting your account.';
+    if (res.status === 429) return 'Too many attempts. Try again later.';
+    if (!res.ok) return 'Could not delete the account. Nothing was changed. Try again.';
     await supabase.auth.signOut();
     return null;
   } catch {
-    return 'Could not reach the server.';
+    return 'Could not reach the server. Nothing was changed.';
   }
 }

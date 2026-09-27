@@ -30,8 +30,8 @@ export default function GymTab() {
   };
 
   const probe = async () => {
-    const { caps: c, error } = await fetchCapabilities();
-    setCaps(error ?? `service ok, ${c?.candidatesPerJob} candidates per generation`);
+    const r = await fetchCapabilities();
+    setCaps(r.ok ? `service ok, ${r.data.candidatesPerJob} candidates per generation` : `unavailable (${r.error})`);
   };
 
   return (
