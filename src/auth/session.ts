@@ -56,6 +56,12 @@ export async function verifyEmailCode(email: string, code: string): Promise<stri
   return error ? error.message : null;
 }
 
+/** Test builds only: anonymous session (requires anonymous sign-ins enabled in Supabase). */
+export async function signInAsGuest(): Promise<string | null> {
+  const { error } = await supabase.auth.signInAnonymously();
+  return error ? error.message : null;
+}
+
 export async function signOut(): Promise<void> {
   await supabase.auth.signOut();
 }

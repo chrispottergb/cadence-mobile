@@ -26,10 +26,28 @@ export interface PlayableTrack {
   durationSeconds: number;
   jobId: string;
   label: string;
+  /** Bundled demo track (test builds only): no account or network needed. */
+  demo?: number;
 }
+
+/**
+ * Bundled demo tracks so the lab runs with no sign-in and no generated music.
+ * Synthesized locally (no provider credits). Signed-URL and network tests
+ * still need real authorized tracks.
+ */
+const DEMO_TRACKS: PlayableTrack[] = [
+  { trackId: 'demo-a', title: 'Demo A (120 bpm)', durationSeconds: 60, jobId: 'demo', label: 'A', demo: require('../../assets/audiolab/demo/demo-a.mp3') },
+  { trackId: 'demo-b', title: 'Demo B (96 bpm)', durationSeconds: 60, jobId: 'demo', label: 'B', demo: require('../../assets/audiolab/demo/demo-b.mp3') },
+  { trackId: 'demo-c', title: 'Demo C (140 bpm)', durationSeconds: 60, jobId: 'demo', label: 'C', demo: require('../../assets/audiolab/demo/demo-c.mp3') },
+];
 
 /** Tracks the signed-in user is authorized to play (their own + current-gym music). */
 export async function listPlayable(): Promise<PlayableTrack[]> {
+  const real = await listAuthorized().catch(() => [] as PlayableTrack[]);
+  return real.length >= 2 ? real : [...real, ...DEMO_TRACKS];
+}
+
+async function listAuthorized(): Promise<PlayableTrack[]> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token || !baseUrl) return [];
@@ -47,6 +65,12 @@ export async function listPlayable(): Promise<PlayableTrack[]> {
 
 export async function resolveTrack(t: PlayableTrack, mode: 'download' | 'stream'): Promise<LoadedTrack> {
   const t0 = Date.now();
+  if (t.demo !== undefined) {
+    const a = Asset.fromModule(t.demo);
+    await a.downloadAsync();
+    record('assets', 'demo_track', { track: t.trackId, ms: Date.now() - t0 });
+    return { trackId: t.trackId, source: a.localUri ?? a.uri, durationSeconds: t.durationSeconds };
+  }
   const signed = await getPlaybackUrl(t.trackId);
   if (!signed.ok) throw new Error(`playback not authorized (${signed.error})`);
   if (mode === 'stream') {

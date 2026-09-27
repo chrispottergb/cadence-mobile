@@ -23,6 +23,8 @@ workflows:
         EXPO_PUBLIC_AUDIO_LAB: "1"
         # Apple sign-in hidden until the Supabase Apple provider is set up.
         EXPO_PUBLIC_APPLE_SIGNIN: "0"
+        # Test builds only: guest (anonymous) entry while email is unfinished.
+        EXPO_PUBLIC_GUEST_SIGNIN: "1"
       node: 22
       xcode: latest
       cocoapods: default

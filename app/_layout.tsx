@@ -36,7 +36,8 @@ export default function RootLayout() {
     if (!session.ready) return;
     const top = segments[0] as string | undefined;
     if (!session.session) {
-      if (top !== '(auth)') router.replace('/(auth)/sign-in');
+      // The dev-only Audio Lab is reachable signed out (it falls back to bundled demo tracks).
+      if (top !== '(auth)' && !(top === 'audio-lab' && process.env.EXPO_PUBLIC_AUDIO_LAB === '1')) router.replace('/(auth)/sign-in');
       return;
     }
     if (!experience.loaded) return;

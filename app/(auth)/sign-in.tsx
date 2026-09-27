@@ -3,11 +3,14 @@ import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, View } from 'react-native';
 
 import { appleSignInAvailable, signInWithApple } from '@/auth/apple';
-import { sendEmailCode } from '@/auth/session';
+import { sendEmailCode, signInAsGuest } from '@/auth/session';
 import { Button, Field, Screen, space, Text } from '@/ui';
 
 /** Apple sign-in stays hidden until the Supabase Apple provider is configured. */
 const APPLE_ENABLED = process.env.EXPO_PUBLIC_APPLE_SIGNIN === '1';
+/** Test builds only: guest entry and a direct Audio Lab link. */
+const GUEST_ENABLED = process.env.EXPO_PUBLIC_GUEST_SIGNIN === '1';
+const LAB_ENABLED = process.env.EXPO_PUBLIC_AUDIO_LAB === '1';
 
 export default function SignIn() {
   const router = useRouter();
@@ -69,6 +72,25 @@ export default function SignIn() {
                 void signInWithApple().then((e) => e && setError(e));
               }}
             />
+          </>
+        ) : null}
+        {GUEST_ENABLED ? (
+          <>
+            <View style={{ height: space.sm }} />
+            <Button
+              testID="guest"
+              title="Continue as guest (test build)"
+              variant="secondary"
+              onPress={() => {
+                void signInAsGuest().then((e) => e && setError(e));
+              }}
+            />
+          </>
+        ) : null}
+        {LAB_ENABLED ? (
+          <>
+            <View style={{ height: space.sm }} />
+            <Button testID="open-lab" title="Open Audio Lab" variant="ghost" onPress={() => router.push('/audio-lab')} />
           </>
         ) : null}
       </KeyboardAvoidingView>
