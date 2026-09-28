@@ -2,11 +2,12 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Platform, ScrollView, Share, View } from 'react-native';
 import * as Application from 'expo-application';
+import * as Device from 'expo-device';
 
 import { clearLabCache, cueSeconds, listPlayable, loadCueAssets, type PlayableTrack, resolveTrack } from '@/audiolab/assets';
 import type { EngineSnapshot, LabEngine } from '@/audiolab/engine';
 import { GraphEngine } from '@/audiolab/graphEngine';
-import { clearLab, exportRun, jsHeapBytes, labEvents, record, subscribeLab, summarize } from '@/audiolab/metrics';
+import { clearLab, exportRun, getTest, jsHeapBytes, labEvents, record, setTest, subscribeLab, summarize } from '@/audiolab/metrics';
 import { PlayerEngine } from '@/audiolab/playerEngine';
 import { type CueSpec, expandCues, formatClock, placeTracks, resolveCollisions, type TimelineTrack, totalDuration } from '@/audiolab/timeline';
 import { Button, Card, colors, Screen, space, Text } from '@/ui';
@@ -72,6 +73,8 @@ export default function AudioLab() {
   const [engineName, setEngineName] = useState<EngineName>('graph');
   const [mode, setMode] = useState<'download' | 'stream'>('download');
   const [crossfade, setCrossfade] = useState(0);
+  const [shortLinks, setShortLinks] = useState(false);
+  const [test, setTestState] = useState(getTest());
   const [tracks, setTracks] = useState<PlayableTrack[]>([]);
   const [info, setInfo] = useState<string>('');
   const [snap, setSnap] = useState<EngineSnapshot | null>(null);
@@ -127,14 +130,14 @@ export default function AudioLab() {
       const unique = [...new Map(sc.seq.map((t) => [t.trackId, t])).values()];
       setInfo(`Loading ${unique.length} tracks (${mode})...`);
       const loaded = [];
-      for (const t of unique) loaded.push(await resolveTrack(t, mode));
+      for (const t of unique) loaded.push(await resolveTrack(t, mode, shortLinks ? 90 : undefined));
       const assets = await loadCueAssets();
       await e.load(sc.placed, loaded, sc.cues, assets);
-      record('lab', 'scenario', { scenario: s, engine: e.name, mode, crossfade, totalSeconds: Number(sc.total.toFixed(2)), segments: sc.placed.length, cues: sc.cues.length, dropped: sc.dropped, deferred: sc.deferred });
+      record('lab', 'scenario', { scenario: s, engine: e.name, mode, crossfade, shortLinks, demo: sc.seq.every((t) => t.demo !== undefined), totalSeconds: Number(sc.total.toFixed(2)), segments: sc.placed.length, cues: sc.cues.length, dropped: sc.dropped, deferred: sc.deferred });
       setInfo(`${s}: ${sc.placed.length} segments, ${formatClock(sc.total)}, ${sc.cues.length} cues (${sc.dropped} dropped, ${sc.deferred} deferred by policy)`);
       setSnap(e.snapshot());
     },
-    [tracks, engineName, mode, crossfade],
+    [tracks, engineName, mode, crossfade, shortLinks],
   );
 
   const late = events.filter((e) => e.kind === 'cue_fired').map((e) => Number(e.data.lateMs));
@@ -161,6 +164,25 @@ export default function AudioLab() {
 
         <Card style={{ gap: space.sm }}>
           <Text variant="label" muted>
+            Which test are you running? (tags every measurement)
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+            {['T1 Basic', 'T2 Bluetooth', 'T3 Interrupt', 'T4 Cues', 'T5 Ducking', 'T6 Transitions', 'T7 30 min', 'T8 45 min', 'Links', 'Network'].map((l) => (
+              <Button
+                key={l}
+                title={test === l ? `● ${l}` : l}
+                variant={test === l ? 'primary' : 'secondary'}
+                onPress={() => {
+                  setTest(l);
+                  setTestState(l);
+                }}
+              />
+            ))}
+          </View>
+        </Card>
+
+        <Card style={{ gap: space.sm }}>
+          <Text variant="label" muted>
             Setup ({tracks.length} authorized tracks)
           </Text>
           <View style={{ flexDirection: 'row', gap: space.sm }}>
@@ -172,6 +194,12 @@ export default function AudioLab() {
             </View>
           </View>
           <Button testID="lab-xfade" title={`Crossfade: ${crossfade}s`} variant="secondary" onPress={() => setCrossfade(crossfade ? 0 : 3)} />
+          <Button
+            testID="lab-shortlinks"
+            title={`Signed links: ${shortLinks ? '90 s (expiry test)' : 'normal'}`}
+            variant="secondary"
+            onPress={() => setShortLinks(!shortLinks)}
+          />
           <View style={{ flexDirection: 'row', gap: space.sm }}>
             {(['class3', 'long30', 'long45'] as Scenario[]).map((s) => (
               <View key={s} style={{ flex: 1 }}>
@@ -243,6 +271,11 @@ export default function AudioLab() {
                 message: exportRun({
                   os: Platform.OS,
                   osVersion: String(Platform.Version),
+                  model: Device.modelName ?? null,
+                  modelId: Device.modelId ?? null,
+                  physicalDevice: Device.isDevice ? 'yes' : 'no',
+                  engine: engine.current?.name ?? engineName,
+                  test,
                   build: Application.nativeBuildVersion ?? null,
                   version: Application.nativeApplicationVersion ?? null,
                 }),

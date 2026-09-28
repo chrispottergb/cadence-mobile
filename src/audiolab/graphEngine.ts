@@ -168,6 +168,15 @@ export class GraphEngine implements LabEngine {
       mg.linearRampToValueAtTime(this.masterLevel * c.duckTo, at);
       mg.setValueAtTime(this.masterLevel * c.duckTo, at + c.durationSeconds);
       mg.linearRampToValueAtTime(this.masterLevel, at + c.durationSeconds + DUCK_RELEASE);
+      record(this.name, 'duck_scheduled', {
+        key: c.key,
+        attackStart: Number(Math.max(ctx.currentTime, at - DUCK_ATTACK).toFixed(4)),
+        cueStart: Number(at.toFixed(4)),
+        cueEnd: Number((at + c.durationSeconds).toFixed(4)),
+        restored: Number((at + c.durationSeconds + DUCK_RELEASE).toFixed(4)),
+        duckTo: c.duckTo,
+        master: this.masterLevel,
+      });
       src.onEnded = () => {
         this.fired.add(c.key);
         record(this.name, 'cue_end', { key: c.key, ctx: Number(ctx.currentTime.toFixed(4)), expectedEnd: Number((at + buf.duration).toFixed(4)) });

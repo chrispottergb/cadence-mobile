@@ -101,7 +101,9 @@ export const getGeneration = (id: string) => call<GenerationJob>(`/v1/generation
 export const setLifecycle = (trackId: string, lifecycle: 'previewed' | 'selected' | 'unselected') =>
   call<GenerationJob>(`/v1/tracks/${trackId}/lifecycle`, { method: 'POST', body: JSON.stringify({ lifecycle }) });
 
-export const getPlaybackUrl = (trackId: string) => call<{ url: string; expiresInSeconds: number }>(`/v1/tracks/${trackId}/playback`);
+/** ttlSeconds is honoured only by a server with the development-only short-link setting; it can only shorten. */
+export const getPlaybackUrl = (trackId: string, ttlSeconds?: number) =>
+  call<{ url: string; expiresInSeconds: number }>(`/v1/tracks/${trackId}/playback${ttlSeconds ? `?ttl=${Math.round(ttlSeconds)}` : ''}`);
 
 /** Plain-language message for a service error code. Never shows vendor detail. */
 export function describeError(code: string): string {

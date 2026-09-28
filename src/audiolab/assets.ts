@@ -63,7 +63,7 @@ async function listAuthorized(): Promise<PlayableTrack[]> {
   return out;
 }
 
-export async function resolveTrack(t: PlayableTrack, mode: 'download' | 'stream'): Promise<LoadedTrack> {
+export async function resolveTrack(t: PlayableTrack, mode: 'download' | 'stream', shortTtlSeconds?: number): Promise<LoadedTrack> {
   const t0 = Date.now();
   if (t.demo !== undefined) {
     const a = Asset.fromModule(t.demo);
@@ -71,10 +71,10 @@ export async function resolveTrack(t: PlayableTrack, mode: 'download' | 'stream'
     record('assets', 'demo_track', { track: t.trackId, ms: Date.now() - t0 });
     return { trackId: t.trackId, source: a.localUri ?? a.uri, durationSeconds: t.durationSeconds };
   }
-  const signed = await getPlaybackUrl(t.trackId);
+  const signed = await getPlaybackUrl(t.trackId, mode === 'stream' ? shortTtlSeconds : undefined);
   if (!signed.ok) throw new Error(`playback not authorized (${signed.error})`);
   if (mode === 'stream') {
-    record('assets', 'signed_url', { track: t.trackId, ms: Date.now() - t0, expiresIn: signed.data.expiresInSeconds });
+    record('assets', 'signed_url', { track: t.trackId, ms: Date.now() - t0, expiresIn: signed.data.expiresInSeconds, requestedTtl: shortTtlSeconds ?? null, expiresAt: Date.now() + signed.data.expiresInSeconds * 1000 });
     return { trackId: t.trackId, source: signed.data.url, durationSeconds: t.durationSeconds };
   }
   await FileSystem.makeDirectoryAsync(LAB_CACHE, { intermediates: true }).catch(() => undefined);

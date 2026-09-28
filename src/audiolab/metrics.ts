@@ -11,10 +11,18 @@ export interface LabEvent {
 }
 
 const events: LabEvent[] = [];
+let currentTest = 'untagged';
+
+/** Tag every following event with the Stage A test being run. */
+export function setTest(label: string): void {
+  currentTest = label;
+  record('tester', 'test_start', { label });
+}
+export const getTest = () => currentTest;
 const listeners = new Set<() => void>();
 
 export function record(engine: string, kind: string, data: LabEvent['data'] = {}): void {
-  const e: LabEvent = { t: Date.now(), engine, kind, data };
+  const e: LabEvent = { t: Date.now(), engine, kind, data: { ...data, test: currentTest } };
   events.push(e);
   if (events.length > 2000) events.splice(0, events.length - 2000);
   console.log(`CADENCE_LAB ${JSON.stringify(e)}`);
@@ -57,5 +65,48 @@ export function jsHeapBytes(): number | null {
 
 /** The full run as JSON for the Stage A report: device, build, events. No user data. */
 export function exportRun(device: Record<string, string | number | null>): string {
-  return JSON.stringify({ exportedAt: new Date().toISOString(), device, count: events.length, events });
+  return JSON.stringify({ exportedAt: new Date().toISOString(), device, summary: summarizeRun(events), count: events.length, events });
+}
+
+/**
+ * Per test and engine: the numbers the Stage A report needs, computed from
+ * raw events (which are exported alongside, unmodified).
+ */
+export function summarizeRun(list: LabEvent[]) {
+  const groups = new Map<string, LabEvent[]>();
+  for (const e of list) {
+    const k = `${e.data.test ?? 'untagged'} | ${e.engine}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(e);
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, es] of groups) {
+    const of = (kind: string) => es.filter((e) => e.kind === kind);
+    const num = (e: LabEvent, f: string) => Number(e.data[f]);
+    // Media-player engine: JS-fired cue lateness against the player clock.
+    const late = of('cue_fired').map((e) => num(e, 'lateMs'));
+    // Audio-graph engine: cue end callback time vs the scheduled end on the audio clock (upper bound on delivery lag).
+    const graphEnd = of('cue_end').map((e) => Math.round((num(e, 'ctx') - num(e, 'expectedEnd')) * 1000));
+    const trackEnd = of('track_end').map((e) => (e.data.lateMs !== undefined ? num(e, 'lateMs') : Math.round((num(e, 'ctx') - num(e, 'expected')) * 1000)));
+    const hb = of('heartbeat');
+    const drift = hb.map((e) => num(e, 'driftMs'));
+    const heap = hb.map((e) => num(e, 'heapBytes')).filter((n) => Number.isFinite(n) && n > 0);
+    out[k] = {
+      events: es.length,
+      states: of('state').map((e) => e.data.state),
+      cueLateMs: summarize(late),
+      cueEndDeliveryMs: summarize(graphEnd),
+      trackEndMs: summarize(trackEnd),
+      driftMs: { final: drift.at(-1) ?? null, maxAbs: drift.length ? Math.max(...drift.map(Math.abs)) : null, samples: drift.length },
+      heapBytes: heap.length ? { first: heap[0], last: heap.at(-1), max: Math.max(...heap) } : null,
+      playedSeconds: hb.length ? num(hb.at(-1)!, 'wallElapsed') : null,
+      interruptions: of('interruption').map((e) => e.data),
+      routes: of('route').map((e) => e.data),
+      marks: of('mark').map((e) => ({ note: e.data.note, position: e.data.position, t: e.t })),
+      ducks: of('duck').length + of('duck_scheduled').length,
+      errors: of('error').map((e) => e.data.message),
+      resumes: of('resume').map((e) => e.data),
+    };
+  }
+  return out;
 }

@@ -143,6 +143,7 @@ export class PlayerEngine implements LabEngine {
   };
 
   private rampDuck(target: number, ms: number) {
+    record(this.name, 'duck', { target, rampMs: ms, from: Number(this.duck.level.toFixed(3)), position: Number(this.position().toFixed(3)) });
     this.duck = { level: this.duck.level, target, t0: Date.now(), from: this.duck.level, ms };
   }
 
