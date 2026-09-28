@@ -2,9 +2,11 @@ import {
   addCue,
   addSection,
   addTrack,
+  addTrackAtFreeSpot,
   appendTrack,
   type ClassSoundtrack,
   issues,
+  laneRows,
   newSoundtrack,
   packTracks,
   parseSoundtrack,
@@ -168,5 +170,31 @@ describe('persistence', () => {
     expect(parseSoundtrack({ ...s, cues: [{ id: 'x', type: 'explode', timeSeconds: 1 }] }).ok).toBe(false);
     expect(parseSoundtrack({ ...s, tracks: [{ id: 't', assetId: 'a', assetDurationSeconds: 0 }] }).ok).toBe(false);
     expect(parseSoundtrack(null).ok).toBe(false);
+  });
+});
+
+describe('adding music at the cursor', () => {
+  it('never stacks a new song on music already playing at the cursor', () => {
+    let s = newSoundtrack('x', 600);
+    s = addTrackAtFreeSpot(s, A, 0);
+    s = addTrackAtFreeSpot(s, B, 0); // same cursor: goes after A, not on top of it
+    s = addTrackAtFreeSpot(s, C, 10); // inside A: goes after B (A then B cover the spot)
+    const t = sortedTracks(s);
+    expect(t.map((x) => [x.label, x.startSeconds])).toEqual([
+      ['A', 0],
+      ['B', 54.8],
+      ['C', 174.8],
+    ]);
+    expect(issues(s).filter((i) => i.kind === 'overlap')).toHaveLength(0);
+    expect(addTrackAtFreeSpot(s, A, 400).tracks.at(-1)!.startSeconds).toBe(400); // free spot: exactly at the cursor
+  });
+
+  it('puts overlapping tracks on separate display rows', () => {
+    let s = newSoundtrack('x', 600);
+    s = addTrack(s, A, 0);
+    s = addTrack(s, B, 10);
+    s = addTrack(s, C, 200);
+    const rows = laneRows(s.tracks);
+    expect([...rows.values()]).toEqual([0, 1, 0]);
   });
 });

@@ -153,6 +153,38 @@ export function addTrack(s: ClassSoundtrack, asset: AssetRef, atSeconds: number)
   return { ...s, tracks: [...s.tracks, t] };
 }
 
+/**
+ * "+ Music here": start at the cursor, but never on top of music that is
+ * already playing there. If a track covers the cursor, the new one starts
+ * where that track ends (repeated until the spot is free). Builder feedback,
+ * build 120: adding twice at 0:00 stacked two songs at full volume.
+ */
+export function addTrackAtFreeSpot(s: ClassSoundtrack, asset: AssetRef, atSeconds: number): ClassSoundtrack {
+  let start = Math.max(0, atSeconds);
+  for (let guard = 0; guard < 100; guard++) {
+    const covering = s.tracks.filter((t) => t.startSeconds <= start + 1e-6 && trackEnd(t) > start + 1e-6);
+    if (!covering.length) break;
+    start = Math.max(...covering.map(trackEnd));
+  }
+  return addTrack(s, asset, start);
+}
+
+/** Lane rows so overlapping tracks are drawn on separate rows (display only). */
+export function laneRows(tracks: SoundtrackTrack[]): Map<string, number> {
+  const rows: number[] = []; // end time per row
+  const out = new Map<string, number>();
+  for (const t of [...tracks].sort((a, b) => a.startSeconds - b.startSeconds)) {
+    let r = rows.findIndex((end) => end <= t.startSeconds + 1e-6);
+    if (r < 0) {
+      r = rows.length;
+      rows.push(0);
+    }
+    rows[r] = trackEnd(t);
+    out.set(t.id, r);
+  }
+  return out;
+}
+
 /** Append after the last track (butt-joined). */
 export function appendTrack(s: ClassSoundtrack, asset: AssetRef): ClassSoundtrack {
   const last = sortedTracks(s).at(-1);

@@ -10,11 +10,12 @@ import type { EngineKind, EngineSnapshot, PlaybackEngine } from '@/playback/engi
 import {
   addCue,
   addSection,
-  addTrack,
+  addTrackAtFreeSpot,
   type ClassSoundtrack,
   CUE_TYPES,
   type CueType,
   issues,
+  laneRows,
   removeCue,
   removeSection,
   removeTrack,
@@ -36,7 +37,9 @@ import { Button, Card, colors, Field, radius, Screen, space, Text } from '@/ui';
  * large buttons, tap-to-place at the cursor, and every edit resolves to exact
  * timeline values. The saved model, never a pixel position, is the truth.
  */
-const PX = 3; // pixels per second on the timeline
+const DEFAULT_PX = 3; // pixels per second on the timeline
+const MIN_PX = 0.4;
+const MAX_PX = 24;
 const ROW = 44;
 const clock = (s: number) => formatClock(s).replace(/\.\d$/, '');
 const cueSec = (a: string) => cueSeconds(a as CueId);
@@ -59,6 +62,12 @@ export default function Builder() {
   const [snap, setSnap] = useState<EngineSnapshot | null>(null);
   const [previewStale, setPreviewStale] = useState(false);
   const [active, setActive] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  /** Preview run id: a newer preview (or Stop) makes older in-flight preparation drop itself. */
+  const run = useRef(0);
+  /** Timeline zoom in pixels per second; pinch or the zoom buttons change it. Display only. */
+  const [px, setPx] = useState(DEFAULT_PX);
+  const pinch = useRef<{ dist: number; px: number } | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -115,13 +124,17 @@ export default function Builder() {
       setStatus('Add some music first.');
       return;
     }
+    const myRun = ++run.current;
     const prev = engine.current;
     engine.current = null;
+    setActive(false);
     if (prev) {
       await prev.stop().catch(() => undefined);
       await prev.dispose();
     }
+    setPreparing(true);
     setStatus('Preparing preview...');
+    let e: PlaybackEngine | null = null;
     try {
       const byId = new Map(library.map((t) => [t.trackId, t]));
       const unique = [...new Set(plan.placed.map((p) => p.trackId))];
@@ -131,16 +144,24 @@ export default function Builder() {
         if (!t) throw new Error('A track in this soundtrack is no longer available to you.');
         loaded.push(await resolveTrack(t, 'download'));
       }
-      const e = createEngine(engineKind);
+      if (myRun !== run.current) return; // superseded while downloading
+      e = createEngine(engineKind);
+      await e.load(plan.placed, loaded, plan.cues, await loadCueAssets());
+      if (myRun !== run.current) {
+        await e.dispose(); // superseded while loading: never becomes audible
+        return;
+      }
       engine.current = e;
       setActive(true);
-      await e.load(plan.placed, loaded, plan.cues, await loadCueAssets());
       e.setMusicGain(doc.musicGain);
       await e.play(from);
       setPreviewStale(false);
       setStatus(dirty ? 'Previewing (unsaved changes)' : 'Previewing');
     } catch (err) {
+      if (e && engine.current !== e) await e.dispose().catch(() => undefined);
       setStatus(err instanceof Error ? err.message : 'Preview failed.');
+    } finally {
+      if (myRun === run.current) setPreparing(false);
     }
   };
 
@@ -155,10 +176,12 @@ export default function Builder() {
     const st = e?.snapshot().state;
     if (e && st === 'PLAYING') void e.pause();
     else if (e && (st === 'PAUSED' || st === 'INTERRUPTED')) void e.resume();
-    else void preview(cursor);
+    else if (!preparing) void preview(cursor);
   };
 
   const stopPreview = async () => {
+    run.current += 1; // cancels any preview still preparing
+    setPreparing(false);
     const e = engine.current;
     if (!e) return;
     const at = e.snapshot().positionSeconds;
@@ -183,11 +206,25 @@ export default function Builder() {
     );
   }
 
-  const width = Math.max(320, doc.durationSeconds * PX);
+  const width = Math.max(320, doc.durationSeconds * px);
+  const rows = laneRows(tracks);
+  const musicRows = Math.max(1, ...[...rows.values()].map((x) => x + 1));
+  // Ruler spacing adapts to zoom so labels never crowd: 10 s, 30 s, 1 min or 5 min.
+  const tick = px >= 12 ? 10 : px >= 5 ? 30 : px >= 1.5 ? 60 : 300;
+  const onTouchMove = (ev: { nativeEvent: { touches: { pageX: number; pageY: number }[] } }) => {
+    const t = ev.nativeEvent.touches;
+    if (t.length !== 2) return;
+    const dist = Math.hypot(t[0]!.pageX - t[1]!.pageX, t[0]!.pageY - t[1]!.pageY);
+    if (!pinch.current) pinch.current = { dist, px };
+    else setPx(Math.min(MAX_PX, Math.max(MIN_PX, pinch.current.px * (dist / pinch.current.dist))));
+  };
+  const onTouchEnd = () => {
+    pinch.current = null;
+  };
   const selTrack = sel?.kind === 'track' ? doc.tracks.find((t) => t.id === sel.id) : undefined;
   const selCue = sel?.kind === 'cue' ? doc.cues.find((c) => c.id === sel.id) : undefined;
   const selSection = sel?.kind === 'section' ? doc.sections.find((x) => x.id === sel.id) : undefined;
-  const at = (e: { nativeEvent: { locationX: number } }) => Math.max(0, Math.min(doc.durationSeconds, Math.round(e.nativeEvent.locationX / PX)));
+  const at = (e: { nativeEvent: { locationX: number } }) => Math.max(0, Math.min(doc.durationSeconds, Math.round(e.nativeEvent.locationX / px)));
 
   return (
     <Screen>
@@ -209,13 +246,27 @@ export default function Builder() {
         </View>
 
         {/* Timeline: sections / music / cues, with the playhead. Tap a row to move the cursor. */}
-        <Card style={{ padding: space.sm }}>
+        {warn.some((w) => w.kind === 'overlap') ? (
+          <Text style={{ color: colors.danger }}>Two songs overlap and will play at the same time. Select one and move it, or add fades.</Text>
+        ) : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <View style={{ flex: 1 }}>
+            <Button testID="st-zoom-out" title="Zoom out" variant="secondary" onPress={() => setPx((v) => Math.max(MIN_PX, v / 1.6))} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Button testID="st-zoom-in" title="Zoom in" variant="secondary" onPress={() => setPx((v) => Math.min(MAX_PX, v * 1.6))} />
+          </View>
+        </View>
+        <Text muted variant="caption">
+          Pinch the timeline to zoom. Tap a lane to move the cursor; tap a block to edit it.
+        </Text>
+        <Card style={{ padding: space.sm }} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
           <ScrollView horizontal>
             <View style={{ width }}>
               <Pressable onPress={(e) => setCursor(at(e))} style={{ height: 22 }}>
-                {Array.from({ length: Math.floor(doc.durationSeconds / 60) + 1 }, (_, m) => (
-                  <Text key={m} variant="caption" muted style={{ position: 'absolute', left: m * 60 * PX + 2 }}>
-                    {m % 5 === 0 ? `${m}m` : '·'}
+                {Array.from({ length: Math.floor(doc.durationSeconds / tick) + 1 }, (_, k) => (
+                  <Text key={k} variant="caption" muted style={{ position: 'absolute', left: k * tick * px + 2 }}>
+                    {clock(k * tick)}
                   </Text>
                 ))}
               </Pressable>
@@ -223,8 +274,8 @@ export default function Builder() {
                 {doc.sections.map((x) => (
                   <Block
                     key={x.id}
-                    left={x.startSeconds * PX}
-                    width={(x.endSeconds - x.startSeconds) * PX}
+                    left={x.startSeconds * px}
+                    width={(x.endSeconds - x.startSeconds) * px}
                     color={colors.surfaceRaised}
                     active={sel?.id === x.id}
                     label={x.label}
@@ -232,15 +283,16 @@ export default function Builder() {
                   />
                 ))}
               </Lane>
-              <Lane label="Music" onPress={(e) => setCursor(at(e))}>
+              <Lane label="Music" rows={musicRows} onPress={(e) => setCursor(at(e))}>
                 {tracks.map((t) => (
                   <Block
                     key={t.id}
-                    left={t.startSeconds * PX}
-                    width={t.durationSeconds * PX}
+                    row={rows.get(t.id) ?? 0}
+                    left={t.startSeconds * px}
+                    width={t.durationSeconds * px}
                     color="#2B3A55"
                     active={sel?.id === t.id}
-                    label={t.label}
+                    label={`${t.label} · ${clock(t.durationSeconds)}`}
                     onPress={() => setSel({ kind: 'track', id: t.id })}
                   />
                 ))}
@@ -253,7 +305,7 @@ export default function Builder() {
                     hitSlop={10}
                     style={{
                       position: 'absolute',
-                      left: c.timeSeconds * PX - 7,
+                      left: c.timeSeconds * px - 7,
                       top: 6,
                       width: 14,
                       height: ROW - 12,
@@ -265,7 +317,7 @@ export default function Builder() {
                   />
                 ))}
               </Lane>
-              <View pointerEvents="none" style={{ position: 'absolute', left: playhead * PX, top: 0, bottom: 0, width: 2, backgroundColor: colors.success }} />
+              <View pointerEvents="none" style={{ position: 'absolute', left: playhead * px, top: 0, bottom: 0, width: 2, backgroundColor: colors.success }} />
             </View>
           </ScrollView>
         </Card>
@@ -282,11 +334,7 @@ export default function Builder() {
           <View style={{ flexDirection: 'row', gap: space.sm }}>
             {[-30, -5, 5, 30].map((d) => (
               <View key={d} style={{ flex: 1 }}>
-                <Button
-                  title={`${d > 0 ? '+' : ''}${d}s`}
-                  variant="secondary"
-                  onPress={() => nudge(d)}
-                />
+                <Button title={`${d > 0 ? '+' : ''}${d}s`} variant="secondary" onPress={() => nudge(d)} />
               </View>
             ))}
           </View>
@@ -294,12 +342,12 @@ export default function Builder() {
             <View style={{ flex: 2 }}>
               <Button
                 testID="st-preview"
-                title={playing ? 'Pause' : snap?.state === 'PAUSED' || snap?.state === 'INTERRUPTED' ? 'Resume' : 'Preview from here'}
+                title={preparing ? 'Preparing...' : playing ? 'Pause' : snap?.state === 'PAUSED' || snap?.state === 'INTERRUPTED' ? 'Resume' : 'Preview from here'}
                 onPress={togglePlay}
               />
             </View>
             <View style={{ flex: 1 }}>
-              <Button title="Stop" variant="secondary" disabled={!active} onPress={() => void stopPreview()} />
+              <Button title="Stop" variant="secondary" disabled={!active && !preparing} onPress={() => void stopPreview()} />
             </View>
           </View>
           <Button title={`Engine: ${engineKind} (test)`} variant="ghost" onPress={() => setEngineKind((k) => (k === 'media-player' ? 'audio-graph' : 'media-player'))} />
@@ -470,7 +518,7 @@ export default function Builder() {
                       title={`${t.title} · ${clock(t.durationSeconds)}`}
                       variant="secondary"
                       onPress={() => {
-                        const n = addTrack(doc, { assetId: t.trackId, label: t.title, durationSeconds: t.durationSeconds }, cursor);
+                        const n = addTrackAtFreeSpot(doc, { assetId: t.trackId, label: t.title, durationSeconds: t.durationSeconds }, cursor);
                         commit(n, { kind: 'track', id: n.tracks.at(-1)!.id });
                         setPicking(null);
                       }}
@@ -494,6 +542,16 @@ export default function Builder() {
                   />
                 ))}
           </ScrollView>
+          {picking === 'music' ? (
+            <Button
+              title="Generate new music"
+              variant="secondary"
+              onPress={() => {
+                setPicking(null);
+                router.push('/generator');
+              }}
+            />
+          ) : null}
           <Button title="Cancel" variant="ghost" onPress={() => setPicking(null)} />
         </View>
       </Modal>
@@ -501,19 +559,37 @@ export default function Builder() {
   );
 }
 
-function Lane({ label, children, onPress }: { label: string; children: ReactNode; onPress: (e: { nativeEvent: { locationX: number } }) => void }) {
+function Lane({ label, children, onPress, rows = 1 }: { label: string; children: ReactNode; rows?: number; onPress: (e: { nativeEvent: { locationX: number } }) => void }) {
   return (
-    <View style={{ height: ROW, marginBottom: space.xs }}>
+    <View style={{ height: ROW * rows, marginBottom: space.xs }}>
       <Pressable onPress={onPress} style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: colors.bg, borderRadius: radius.sm }} />
-      <Text variant="caption" muted style={{ position: 'absolute', left: 4, top: 2 }}>
-        {label}
-      </Text>
       {children}
+      <View pointerEvents="none" style={{ position: 'absolute', left: 4, top: 2, backgroundColor: '#000b', borderRadius: 4, paddingHorizontal: 4 }}>
+        <Text variant="caption" style={{ color: colors.textMuted }}>
+          {label}
+        </Text>
+      </View>
     </View>
   );
 }
 
-function Block({ left, width, color, label, active, onPress }: { left: number; width: number; color: string; label: string; active: boolean; onPress: () => void }) {
+function Block({
+  left,
+  width,
+  color,
+  label,
+  active,
+  onPress,
+  row = 0,
+}: {
+  left: number;
+  width: number;
+  color: string;
+  label: string;
+  active: boolean;
+  onPress: () => void;
+  row?: number;
+}) {
   return (
     <Pressable
       onPress={onPress}
@@ -521,17 +597,18 @@ function Block({ left, width, color, label, active, onPress }: { left: number; w
         position: 'absolute',
         left,
         width: Math.max(8, width),
-        top: 4,
+        top: row * ROW + 4,
         height: ROW - 8,
         backgroundColor: color,
         borderRadius: radius.sm,
-        borderWidth: active ? 2 : 0,
-        borderColor: colors.accent,
-        justifyContent: 'center',
+        borderWidth: active ? 2 : 1,
+        borderColor: active ? colors.accent : colors.border,
+        justifyContent: 'flex-end',
+        paddingBottom: 2,
         paddingHorizontal: 6,
       }}
     >
-      <Text variant="caption" numberOfLines={1}>
+      <Text variant="caption" numberOfLines={1} style={{ color: colors.text }}>
         {label}
       </Text>
     </Pressable>
