@@ -4,6 +4,9 @@
  * land while a decode is still in flight (the Stage A build 113 failure:
  * every +60 s left an orphaned track playing on top of the new position).
  */
+import { GraphEngine } from '../graphEngine';
+import { placeTracks } from '../timeline';
+
 type Resolver = () => void;
 const mockPendingDecodes: Resolver[] = [];
 const mockStarted: { id: number; when: number; offset: number; stopped: boolean }[] = [];
@@ -79,8 +82,6 @@ jest.mock(
   { virtual: true },
 );
 
-import { GraphEngine } from '../graphEngine';
-import { placeTracks } from '../timeline';
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
