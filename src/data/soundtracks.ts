@@ -37,13 +37,14 @@ export async function loadSoundtrack(id: string): Promise<{ value: LoadedSoundtr
   return { value: { ...toRow(data as Raw), soundtrack: parsed.value }, error: null };
 }
 
-export async function createSoundtrack(gymId: string, profileId: string, s: ClassSoundtrack): Promise<{ id: string | null; error: string | null }> {
+export async function createSoundtrack(gymId: string, profileId: string, s: ClassSoundtrack): Promise<{ id: string | null; revision: number | null; error: string | null }> {
   const { data, error } = await supabase
     .from('class_soundtracks')
     .insert({ gym_id: gymId, name: s.name, duration_seconds: s.durationSeconds, schema_version: SCHEMA_VERSION, document: s, created_by: profileId })
-    .select('id')
+    .select('id, revision')
     .single();
-  return { id: (data as { id: string } | null)?.id ?? null, error: error?.message ?? null };
+  const row = data as { id: string; revision: number } | null;
+  return { id: row?.id ?? null, revision: row?.revision ?? null, error: error?.message ?? null };
 }
 
 /** Save with the revision the editor loaded; returns the new revision, or 'stale' if someone saved first. */

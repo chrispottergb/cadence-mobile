@@ -26,6 +26,8 @@ export interface PlayableTrack {
   durationSeconds: number;
   jobId: string;
   label: string;
+  /** Descriptive style tags, when the service has them. */
+  style?: string;
   /** Bundled demo track (test builds only): no account or network needed. */
   demo?: number;
 }
@@ -53,11 +55,11 @@ async function listAuthorized(): Promise<PlayableTrack[]> {
   if (!token || !baseUrl) return [];
   const res = await fetch(`${baseUrl}/v1/generations?limit=20`, { headers: { authorization: `Bearer ${token}` } });
   if (!res.ok) return [];
-  const body = (await res.json()) as { generations: { id: string; candidates: { id: string; label: string; title: string | null; durationSeconds: number | null; playable: boolean }[] }[] };
+  const body = (await res.json()) as { generations: { id: string; candidates: { id: string; label: string; title: string | null; durationSeconds: number | null; playable: boolean; style?: string | null }[] }[] };
   const out: PlayableTrack[] = [];
   for (const g of body.generations) {
     for (const c of g.candidates) {
-      if (c.playable && c.durationSeconds) out.push({ trackId: c.id, title: c.title ?? 'Untitled', durationSeconds: c.durationSeconds, jobId: g.id, label: c.label });
+      if (c.playable && c.durationSeconds) out.push({ trackId: c.id, title: c.title ?? 'Untitled', durationSeconds: c.durationSeconds, jobId: g.id, label: c.label, ...(c.style ? { style: c.style } : {}) });
     }
   }
   return out;

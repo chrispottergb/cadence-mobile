@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, ScrollView, Switch, View } from 'react-native';
 
@@ -27,18 +27,24 @@ import { Button, Card, colors, Field, Screen, space, Text } from '@/ui';
  * controls from the service's capabilities, one idempotency key per press,
  * status polling against OUR service, candidates A and B with preview and
  * select. Not the final Class Soundtrack Builder.
+ *
+ * The Guided Builder opens this screen with a section's context (what the
+ * music is for, style and length) so "Generate music for this section" lands
+ * here pre-filled; the generation pipeline itself is unchanged.
  */
 const fmt = (s: number | null) => (s === null ? '--:--' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
 
 export default function Generator() {
   const router = useRouter();
   const { selected } = useExperience();
+  const params = useLocalSearchParams<{ description?: string; style?: string; seconds?: string }>();
+  const forSection = !!params.description;
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [gymId, setGymId] = useState<string | null>(null);
-  const [description, setDescription] = useState('Driving, steady warmup for pad work');
-  const [style, setStyle] = useState('electronic, driving');
+  const [description, setDescription] = useState(params.description ?? 'Driving, steady warmup for pad work');
+  const [style, setStyle] = useState(params.style ?? 'electronic, driving');
   const [instrumental, setInstrumental] = useState(true);
-  const [duration, setDuration] = useState('120');
+  const [duration, setDuration] = useState(params.seconds ?? '120');
   const [job, setJob] = useState<GenerationJob | null>(null);
   // Earlier generations stay on screen (and keep playing) while a new one runs.
   const [previous, setPrevious] = useState<GenerationJob[]>([]);
@@ -47,7 +53,17 @@ export default function Generator() {
   const pressKey = useRef<string | null>(null);
 
   useEffect(() => {
-    void fetchCapabilities().then((r) => (r.ok ? setCaps(r.data) : setError(describeError(r.error))));
+    void fetchCapabilities().then((r) => {
+      if (!r.ok) return setError(describeError(r.error));
+      setCaps(r.data);
+      // A section can be longer than one generated song: ask for the longest the service allows.
+      const { minSeconds, maxSeconds } = r.data.targetDuration;
+      setDuration((d) => {
+        const n = Number(d);
+        if (!Number.isFinite(n)) return d;
+        return String(Math.round(Math.min(maxSeconds ?? n, Math.max(minSeconds ?? n, n))));
+      });
+    });
     if (selected === 'instructor') void listMyGyms().then((r) => setGymId(r.gyms[0]?.id ?? null));
   }, [selected]);
 
@@ -122,9 +138,10 @@ export default function Generator() {
     <Screen>
       <ScrollView contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
         <Text variant="label" muted>
-          Development
+          {forSection ? 'Music for your class' : 'Development'}
         </Text>
-        <Text variant="display">Generator</Text>
+        <Text variant="display">{forSection ? 'Generate music' : 'Generator'}</Text>
+        {forSection ? <Text muted>Filled in from your section. Change anything, then Generate. When it is ready, pick it under Choose music.</Text> : null}
         <Text muted>
           {selected === 'instructor' ? (gymId ? 'Class music: uses the gym allowance.' : 'No gym found; using your personal allowance.') : 'Personal music: uses your allowance.'}
         </Text>
@@ -182,7 +199,7 @@ export default function Generator() {
           </Card>
         ))}
 
-        <Button title="Back" variant="ghost" onPress={() => router.back()} />
+        <Button title={forSection ? 'Back to class' : 'Back'} variant="ghost" onPress={() => router.back()} />
       </ScrollView>
     </Screen>
   );

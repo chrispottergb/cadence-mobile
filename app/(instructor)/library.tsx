@@ -87,7 +87,7 @@ export default function Library() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}
       >
         <Text variant="display">Library</Text>
-        <Button testID="open-soundtracks" title="Class soundtracks" onPress={() => router.push('/soundtracks')} />
+        <Button testID="open-soundtracks" title="Classes" onPress={() => router.push('/soundtracks')} />
         {error ? <Text style={{ color: colors.danger }}>{error}</Text> : null}
 
         <Text variant="label" muted>

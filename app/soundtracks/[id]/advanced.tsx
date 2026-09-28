@@ -33,7 +33,8 @@ import {
 import { Button, Card, colors, Field, radius, Screen, space, Text } from '@/ui';
 
 /**
- * First functional Class Soundtrack Builder (Stage B). Deliberately simple:
+ * Advanced edit: the Stage B timeline editor, reached from the Guided
+ * Builder (src/builder/GuidedBuilder.tsx). Deliberately simple:
  * large buttons, tap-to-place at the cursor, and every edit resolves to exact
  * timeline values. The saved model, never a pixel position, is the truth.
  */
@@ -176,6 +177,9 @@ export default function Builder() {
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
+        <Text variant="label" muted>
+          Advanced edit
+        </Text>
         <Field testID="st-title" value={doc.name} onChangeText={(v) => edit((d) => ({ ...d, name: v }))} maxLength={80} />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
           <Text muted style={{ flex: 1 }}>
