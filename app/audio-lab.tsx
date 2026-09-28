@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Platform, ScrollView, Share, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Share, View } from 'react-native';
 import * as Application from 'expo-application';
 import * as Device from 'expo-device';
 
@@ -9,6 +9,7 @@ import type { EngineSnapshot, LabEngine } from '@/audiolab/engine';
 import { GraphEngine } from '@/audiolab/graphEngine';
 import { clearLab, exportRun, getTest, jsHeapBytes, labEvents, record, setTest, subscribeLab, summarize } from '@/audiolab/metrics';
 import { PlayerEngine } from '@/audiolab/playerEngine';
+import { GUIDE, type GuideTest } from '@/audiolab/guide';
 import { readPrevious, rotateOnOpen, saveCurrent } from '@/audiolab/persist';
 import { type CueSpec, expandCues, formatClock, placeTracks, resolveCollisions, type TimelineTrack, totalDuration } from '@/audiolab/timeline';
 import { Button, Card, colors, Screen, space, Text } from '@/ui';
@@ -85,7 +86,10 @@ function deviceInfo(engineName: string, test: string) {
 
 export default function AudioLab() {
   const router = useRouter();
-  const [engineName, setEngineName] = useState<EngineName>('graph');
+  const [engineName, setEngineName] = useState<EngineName>('player');
+  const [advanced, setAdvanced] = useState(false);
+  const [guide, setGuide] = useState<GuideTest | null>(null);
+  const [verdict, setVerdict] = useState<string | null>(null);
   const [mode, setMode] = useState<'download' | 'stream'>('download');
   const [crossfade, setCrossfade] = useState(0);
   const [shortLinks, setShortLinks] = useState(false);
@@ -144,28 +148,59 @@ export default function AudioLab() {
   }, []);
 
   const load = useCallback(
-    async (s: Scenario) => {
+    async (s: Scenario, over?: { engine?: EngineName; mode?: 'download' | 'stream'; crossfade?: number; shortLinks?: boolean }) => {
+      const engineName_ = over?.engine ?? engineName;
+      const mode_ = over?.mode ?? mode;
+      const crossfade_ = over?.crossfade ?? crossfade;
+      const shortLinks_ = over?.shortLinks ?? shortLinks;
       if (tracks.length < 2) {
         setInfo('Need at least two playable tracks for this account.');
         return;
       }
       await engine.current?.dispose();
-      const e = engineName === 'graph' ? new GraphEngine(() => undefined) : new PlayerEngine(() => undefined);
+      const e = engineName_ === 'graph' ? new GraphEngine(() => undefined) : new PlayerEngine(() => undefined);
       engine.current = e;
-      const sc = buildScenario(s, tracks, crossfade);
+      const sc = buildScenario(s, tracks, crossfade_);
       setTotalSeconds(sc.total);
       const unique = [...new Map(sc.seq.map((t) => [t.trackId, t])).values()];
-      setInfo(`Loading ${unique.length} tracks (${mode})...`);
+      setInfo(`Loading ${unique.length} tracks...`);
       const loaded = [];
-      for (const t of unique) loaded.push(await resolveTrack(t, mode, shortLinks ? 90 : undefined));
+      for (const t of unique) loaded.push(await resolveTrack(t, mode_, shortLinks_ ? 90 : undefined));
       const assets = await loadCueAssets();
       await e.load(sc.placed, loaded, sc.cues, assets);
-      record('lab', 'scenario', { scenario: s, engine: e.name, mode, crossfade, shortLinks, demo: sc.seq.every((t) => t.demo !== undefined), totalSeconds: Number(sc.total.toFixed(2)), segments: sc.placed.length, cues: sc.cues.length, dropped: sc.dropped, deferred: sc.deferred });
+      record('lab', 'scenario', {
+        scenario: s,
+        engine: e.name,
+        mode: mode_,
+        crossfade: crossfade_,
+        shortLinks: shortLinks_,
+        demo: sc.seq.every((t) => t.demo !== undefined),
+        totalSeconds: Number(sc.total.toFixed(2)),
+        segments: sc.placed.length,
+        cues: sc.cues.length,
+        dropped: sc.dropped,
+        deferred: sc.deferred,
+      });
       setInfo(`${s}: ${sc.placed.length} segments, ${formatClock(sc.total)}, ${sc.cues.length} cues (${sc.dropped} dropped, ${sc.deferred} deferred by policy)`);
       setSnap(e.snapshot());
     },
     [tracks, engineName, mode, crossfade, shortLinks],
   );
+
+  const startGuide = useCallback(
+    async (g: GuideTest) => {
+      setGuide(g);
+      setVerdict(null);
+      setTest(g.id);
+      setTestState(g.id);
+      await load(g.scenario, { engine: engineName, mode: g.source, crossfade: g.crossfade, shortLinks: g.shortLinks });
+    },
+    [load, engineName],
+  );
+
+  const shareRun = useCallback(() => {
+    void Share.share({ message: exportRun(deviceInfo(engine.current?.name ?? engineName, test)) });
+  }, [engineName, test]);
 
   const late = events.filter((e) => e.kind === 'cue_fired').map((e) => Number(e.data.lateMs));
   const stats = summarize(late);
@@ -180,9 +215,153 @@ export default function AudioLab() {
     else void e.seek(e.snapshot().positionSeconds + delta);
   }, []);
 
+  if (!advanced) {
+    const playing = sp?.state === 'PLAYING';
+    const ready = sp && sp.state !== 'IDLE' && sp.state !== 'LOADING' && sp.state !== 'ERROR';
+    return (
+      <Screen>
+        <ScrollView contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
+          <Text variant="display">Audio tests</Text>
+          {!guide ? (
+            <>
+              <Text muted>Pick a test. Each one sets itself up; just follow the steps.</Text>
+              <Button
+                testID="lab-engine-simple"
+                title={`Engine: ${engineName === 'player' ? 'Media player (recommended)' : 'Audio graph'}`}
+                variant="secondary"
+                onPress={() => setEngineName(engineName === 'player' ? 'graph' : 'player')}
+              />
+              {GUIDE.map((g) => (
+                <Pressable key={g.id} testID={`guide-${g.id}`} onPress={() => void startGuide(g)}>
+                  <Card style={{ gap: space.xs }}>
+                    <Text variant="title">{g.title}</Text>
+                    <Text muted>{g.minutes}</Text>
+                  </Card>
+                </Pressable>
+              ))}
+              {hasPrevious ? (
+                <Button
+                  title="App crashed last time? Send that run"
+                  variant="secondary"
+                  onPress={() =>
+                    void readPrevious().then((m) => {
+                      if (m) void Share.share({ message: m });
+                    })
+                  }
+                />
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Text variant="title">{guide.title}</Text>
+              <Card style={{ gap: space.sm }}>
+                {guide.steps.map((st, i) => (
+                  <Text key={i}>
+                    {i + 1}. {st}
+                  </Text>
+                ))}
+              </Card>
+
+              <Card style={{ gap: space.xs, alignItems: 'center' }}>
+                <Text testID="lab-clock" variant="display">
+                  {formatClock(sp?.positionSeconds ?? 0)} / {formatClock(totalSeconds)}
+                </Text>
+                <Text muted>
+                  {!ready
+                    ? info || 'Getting ready...'
+                    : playing
+                      ? 'Playing'
+                      : sp?.state === 'INTERRUPTED'
+                        ? 'Paused by the phone'
+                        : sp?.state === 'COMPLETED'
+                          ? 'Finished'
+                          : 'Paused'}
+                </Text>
+                {sp?.lastError ? <Text style={{ color: colors.danger }}>Error: {sp.lastError}</Text> : null}
+              </Card>
+
+              <Button
+                testID="lab-bigplay"
+                title={playing ? 'Pause' : sp?.state === 'PAUSED' || sp?.state === 'INTERRUPTED' ? 'Play' : 'Play from start'}
+                disabled={!ready}
+                onPress={() => act(playing ? 'pause' : sp?.state === 'PAUSED' || sp?.state === 'INTERRUPTED' ? 'resume' : 'play')}
+              />
+              <View style={{ flexDirection: 'row', gap: space.sm }}>
+                <View style={{ flex: 1 }}>
+                  <Button title="+10s" variant="secondary" disabled={!ready} onPress={() => act('seek', 10)} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Button title="+60s" variant="secondary" disabled={!ready} onPress={() => act('seek', 60)} />
+                </View>
+              </View>
+
+              {guide.marks.length ? (
+                <>
+                  <Text variant="label" muted>
+                    Tap when it happens
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+                    {guide.marks.map((m) => (
+                      <Button
+                        key={m}
+                        title={m}
+                        variant="secondary"
+                        onPress={() => record('tester', 'mark', { note: m, position: Number((engine.current?.snapshot().positionSeconds ?? 0).toFixed(3)) })}
+                      />
+                    ))}
+                  </View>
+                </>
+              ) : null}
+
+              <Text variant="label" muted>
+                How did it go?
+              </Text>
+              <View style={{ flexDirection: 'row', gap: space.sm }}>
+                <View style={{ flex: 1 }}>
+                  <Button
+                    testID="lab-worked"
+                    title={verdict === 'pass' ? 'Worked (saved)' : 'It worked'}
+                    variant={verdict === 'pass' ? 'primary' : 'secondary'}
+                    onPress={() => {
+                      setVerdict('pass');
+                      record('tester', 'verdict', { result: 'pass' });
+                    }}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Button
+                    testID="lab-problem"
+                    title={verdict === 'fail' ? 'Problem (saved)' : 'Problem'}
+                    variant={verdict === 'fail' ? 'primary' : 'secondary'}
+                    onPress={() => {
+                      setVerdict('fail');
+                      record('tester', 'verdict', { result: 'fail' });
+                    }}
+                  />
+                </View>
+              </View>
+              <Button testID="lab-send" title="Send results" onPress={shareRun} />
+              <Button
+                title="Back to tests"
+                variant="ghost"
+                onPress={() => {
+                  void engine.current?.stop();
+                  setGuide(null);
+                }}
+              />
+            </>
+          )}
+          <Button title="Advanced (engineering controls)" variant="ghost" onPress={() => setAdvanced(true)} />
+          <Button title="Back" variant="ghost" onPress={() => router.back()} />
+        </ScrollView>
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
+        <Button title="Simple test mode" variant="secondary" onPress={() => setAdvanced(false)} />
         <Text variant="label" muted>
           Development only
         </Text>
@@ -221,12 +400,7 @@ export default function AudioLab() {
             </View>
           </View>
           <Button testID="lab-xfade" title={`Crossfade: ${crossfade}s`} variant="secondary" onPress={() => setCrossfade(crossfade ? 0 : 3)} />
-          <Button
-            testID="lab-shortlinks"
-            title={`Signed links: ${shortLinks ? '90 s (expiry test)' : 'normal'}`}
-            variant="secondary"
-            onPress={() => setShortLinks(!shortLinks)}
-          />
+          <Button testID="lab-shortlinks" title={`Signed links: ${shortLinks ? '90 s (expiry test)' : 'normal'}`} variant="secondary" onPress={() => setShortLinks(!shortLinks)} />
           <View style={{ flexDirection: 'row', gap: space.sm }}>
             {(['class3', 'long30', 'long45'] as Scenario[]).map((s) => (
               <View key={s} style={{ flex: 1 }}>
@@ -276,7 +450,9 @@ export default function AudioLab() {
           <Text variant="label" muted>
             Measurements
           </Text>
-          <Text>Cue lateness (JS-fired, ms): n={stats.n} mean={stats.mean} p50={stats.p50} p95={stats.p95} max={stats.max}</Text>
+          <Text>
+            Cue lateness (JS-fired, ms): n={stats.n} mean={stats.mean} p50={stats.p50} p95={stats.p95} max={stats.max}
+          </Text>
           <Text muted>Audio-graph cues are scheduled on the audio clock; their timing is read from the device log.</Text>
           <Text muted>Logged events: {events.length}</Text>
         </Card>
@@ -287,7 +463,12 @@ export default function AudioLab() {
           </Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
             {['BT on', 'BT off', 'Locked', 'Unlocked', 'Call', 'Other app', 'Network off', 'Network on', 'Heard cue'].map((m) => (
-              <Button key={m} title={m} variant="secondary" onPress={() => record('tester', 'mark', { note: m, position: Number((engine.current?.snapshot().positionSeconds ?? 0).toFixed(3)) })} />
+              <Button
+                key={m}
+                title={m}
+                variant="secondary"
+                onPress={() => record('tester', 'mark', { note: m, position: Number((engine.current?.snapshot().positionSeconds ?? 0).toFixed(3)) })}
+              />
             ))}
           </View>
           <Button
@@ -304,9 +485,11 @@ export default function AudioLab() {
               testID="lab-share-previous"
               title="Share previous run (use after a crash)"
               variant="secondary"
-              onPress={() => void readPrevious().then((m) => {
+              onPress={() =>
+                void readPrevious().then((m) => {
                   if (m) void Share.share({ message: m });
-                })}
+                })
+              }
             />
           ) : null}
           <Button title="Clear log" variant="ghost" onPress={clearLab} />
