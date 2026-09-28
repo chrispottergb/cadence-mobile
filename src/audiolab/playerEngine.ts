@@ -23,6 +23,10 @@ const DUCK_RELEASE_MS = 600;
  * class clock ~1.3 s (audible gap) at the song 2 -> 3 change.
  */
 const PRELOAD_SECONDS = 6;
+/** Position must stop advancing this long (while PLAYING) to count as an interruption. */
+const STALL_MS = 1500;
+/** No interruption verdicts right after a (re)start or song change. */
+const GRACE_MS = 2000;
 
 export class PlayerEngine implements LabEngine {
   readonly name = 'media-player';
@@ -48,8 +52,15 @@ export class PlayerEngine implements LabEngine {
    * Until the player confirms the seek, the clock holds at the target.
    */
   private seekPendingSince: number | null = null;
-  /** Stage A, build 117 T3: iOS stopped the player; the engine kept reporting PLAYING. */
-  private lastPlayingSeen = 0;
+  /**
+   * Interruption detection by progress, not the player's `playing` flag.
+   * Stage A, build 118: the flag lagged on a freshly started segment and the
+   * detector fired 734 ms after a song change (then paused the audio itself).
+   * Now: the reference player's position must stop advancing for STALL_MS
+   * while PLAYING, with a grace period after every segment start.
+   */
+  private lastProgress = { time: -1, at: 0 };
+  private graceUntil = 0;
 
   constructor(private readonly onChange: () => void = () => {}) {}
 
@@ -124,6 +135,8 @@ export class PlayerEngine implements LabEngine {
     if (!this.ref || i >= this.ref.index) {
       this.ref = { index: i, baseClass: seg.startSeconds + into, baseSource: seg.sourceOffsetSeconds + into };
       this.seekPendingSince = Date.now();
+      this.graceUntil = Date.now() + GRACE_MS;
+      this.lastProgress = { time: -1, at: Date.now() };
     }
     record(this.name, 'segment_start', { index: i, classTime: Number(classTime.toFixed(3)), expected: seg.startSeconds });
   }
@@ -134,13 +147,14 @@ export class PlayerEngine implements LabEngine {
     // Interruption detection: the reference player stopped although we are PLAYING.
     const refPlayer = this.ref ? this.players.get(this.ref.index) : undefined;
     const refSeg = this.ref ? this.placed[this.ref.index] : undefined;
-    if (refPlayer && refSeg && this.seekPendingSince === null) {
-      if (refPlayer.playing) this.lastPlayingSeen = Date.now();
-      else if (now < refSeg.endSeconds - 0.3 && Date.now() - this.lastPlayingSeen > 750) {
+    if (refPlayer && refSeg && this.seekPendingSince === null && Date.now() > this.graceUntil) {
+      const cur = refPlayer.currentTime;
+      if (cur !== this.lastProgress.time) this.lastProgress = { time: cur, at: Date.now() };
+      else if (now < refSeg.endSeconds - 0.3 && Date.now() - this.lastProgress.at > STALL_MS) {
         this.pausedAt = now;
         this.stopLoop();
         for (const i of this.started) this.players.get(i)?.pause();
-        record(this.name, 'interruption', { type: 'began', source: 'player_stopped', position: Number(now.toFixed(3)) });
+        record(this.name, 'interruption', { type: 'began', source: 'no_progress', stalledMs: Date.now() - this.lastProgress.at, playingFlag: refPlayer.playing, position: Number(now.toFixed(3)) });
         this.set('INTERRUPTED');
         return;
       }
@@ -234,7 +248,8 @@ export class PlayerEngine implements LabEngine {
     for (const seg of tracksAt(this.placed, fromSeconds)) this.startSegment(seg.index, fromSeconds);
     const first = this.players.get(tracksAt(this.placed, fromSeconds)[0]?.index ?? -1);
     first?.setActiveForLockScreen(true, { title: 'Cadence Audio Lab', artist: 'Cadence' });
-    this.lastPlayingSeen = Date.now();
+    this.graceUntil = Date.now() + GRACE_MS;
+    this.lastProgress = { time: -1, at: Date.now() };
     this.set('PLAYING');
     this.startLoop();
     record(this.name, 'play', { from: fromSeconds, startLatencyMs: Date.now() - t0 });
