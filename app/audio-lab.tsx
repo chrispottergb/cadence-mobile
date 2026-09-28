@@ -7,7 +7,7 @@ import * as Device from 'expo-device';
 import { clearLabCache, cueSeconds, listPlayable, loadCueAssets, type PlayableTrack, resolveTrack } from '@/audiolab/assets';
 import type { EngineSnapshot, LabEngine } from '@/audiolab/engine';
 import { GraphEngine } from '@/audiolab/graphEngine';
-import { clearLab, exportRun, getTest, jsHeapBytes, labEvents, record, setTest, subscribeLab, summarize } from '@/audiolab/metrics';
+import { clearLab, exportRun, getTest, hermesStats, jsHeapBytes, labEvents, logSize, record, setTest, subscribeLab, summarize } from '@/audiolab/metrics';
 import { PlayerEngine } from '@/audiolab/playerEngine';
 import { GUIDE, type GuideTest } from '@/audiolab/guide';
 import { readPrevious, rotateOnOpen, saveCurrent } from '@/audiolab/persist';
@@ -95,6 +95,9 @@ export default function AudioLab() {
   const [shortLinks, setShortLinks] = useState(false);
   const [test, setTestState] = useState(getTest());
   const [hasPrevious, setHasPrevious] = useState(false);
+  // Memory A/B: lean logging stops the 5 s log save and slows the on-screen refresh.
+  const [lean, setLean] = useState(false);
+  const leanRef = useRef(false);
   const [tracks, setTracks] = useState<PlayableTrack[]>([]);
   const [info, setInfo] = useState<string>('');
   const [snap, setSnap] = useState<EngineSnapshot | null>(null);
@@ -108,8 +111,14 @@ export default function AudioLab() {
     infoRef.current = { engineName, test };
   }, [engineName, test]);
   useEffect(() => {
+    leanRef.current = lean;
+    record('lab', 'lean_logging', { on: lean });
+  }, [lean]);
+  useEffect(() => {
     void rotateOnOpen().then(setHasPrevious);
-    const s = setInterval(() => void saveCurrent(deviceInfo(infoRef.current.engineName, infoRef.current.test)), 5000);
+    const s = setInterval(() => {
+      if (!leanRef.current) void saveCurrent(deviceInfo(infoRef.current.engineName, infoRef.current.test));
+    }, 5000);
     return () => clearInterval(s);
   }, []);
 
@@ -118,7 +127,12 @@ export default function AudioLab() {
       setTracks(t);
       record('lab', 'playable', { count: t.length });
     });
-    const i = setInterval(() => engine.current && setSnap(engine.current.snapshot()), 250);
+    let ticks = 0;
+    const i = setInterval(() => {
+      ticks += 1;
+      if (leanRef.current && ticks % 4 !== 0) return; // lean: refresh once a second
+      if (engine.current) setSnap(engine.current.snapshot());
+    }, 250);
     // Heartbeat for drift and memory over long sessions: engine position vs wall clock.
     let playStart: { wall: number; pos: number } | null = null;
     const hb = setInterval(() => {
@@ -138,6 +152,10 @@ export default function AudioLab() {
         driftMs: Math.round((sn.positionSeconds - playStart.pos - wall) * 1000),
         heapBytes: jsHeapBytes(),
         route: sn.route,
+        lean: leanRef.current,
+        ...Object.fromEntries(Object.entries(hermesStats()).map(([k, v]) => [`h_${k}`, v])),
+        ...Object.fromEntries(Object.entries(e.diagnostics?.() ?? {}).map(([k, v]) => [`e_${k}`, v])),
+        logEvents: logSize().events,
       });
     }, 30_000);
     return () => {
@@ -231,6 +249,7 @@ export default function AudioLab() {
           {!guide ? (
             <>
               <Text muted>Pick a test. Each one sets itself up; just follow the steps.</Text>
+              <Button testID="lab-lean" title={`Memory test mode: ${lean ? 'lean logging ON' : 'normal logging'}`} variant="secondary" onPress={() => setLean((v) => !v)} />
               <Button
                 testID="lab-engine-simple"
                 title={`Engine: ${engineName === 'player' ? 'Media player (recommended)' : 'Audio graph'}`}

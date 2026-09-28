@@ -63,6 +63,29 @@ export function jsHeapBytes(): number | null {
   return s && typeof s.js_heapSize === 'number' ? s.js_heapSize : null;
 }
 
+/**
+ * Hermes runtime counters (Stage B memory investigation). js_heapSize alone
+ * cannot tell retained memory from garbage awaiting collection; numGCs and
+ * allocated-vs-heap can. Null fields mean the runtime did not report them.
+ */
+export function hermesStats(): Record<string, number | null> {
+  const h = (globalThis as { HermesInternal?: { getInstrumentedStats?: () => Record<string, number> } }).HermesInternal;
+  const s = h?.getInstrumentedStats?.() ?? {};
+  const pick = (k: string) => (typeof s[k] === 'number' ? s[k]! : null);
+  return {
+    heapBytes: pick('js_heapSize'),
+    allocatedBytes: pick('js_allocatedBytes'),
+    totalAllocatedBytes: pick('js_totalAllocatedBytes'),
+    numGCs: pick('js_numGCs'),
+    gcTimeMs: pick('js_gcTime') === null ? null : Math.round(pick('js_gcTime')! * 1000),
+    mallocEstimateBytes: pick('js_mallocSizeEstimate'),
+    vaBytes: pick('js_vaSize'),
+  };
+}
+
+/** Size of the in-memory lab log (it is serialized every 5 s unless lean logging is on). */
+export const logSize = () => ({ events: events.length });
+
 /** The full run as JSON for the Stage A report: device, build, events. No user data. */
 export function exportRun(device: Record<string, string | number | null>): string {
   return JSON.stringify({ exportedAt: new Date().toISOString(), device, summary: summarizeRun(events), count: events.length, events });

@@ -52,6 +52,8 @@ export class GraphEngine implements LabEngine {
   readonly name = 'audio-graph';
   private ctx: AudioContext | null = null;
   private music: GainNode | null = null;
+  /** Instructor class level, after ducking; ducking ramps on `music` stay relative to it. */
+  private level: GainNode | null = null;
   private cueBus: GainNode | null = null;
   private buffers = new Map<string, AudioBuffer>();
   private sources = new Map<string, string>();
@@ -127,7 +129,9 @@ export class GraphEngine implements LabEngine {
       this.ctx = new AudioContext();
       this.music = this.ctx.createGain();
       this.cueBus = this.ctx.createGain();
-      this.music.connect(this.ctx.destination);
+      this.level = this.ctx.createGain();
+      this.music.connect(this.level);
+      this.level.connect(this.ctx.destination);
       this.cueBus.connect(this.ctx.destination);
       for (const t of tracks) this.sources.set(t.trackId, t.source);
       for (const a of assets) this.cueBuffers.set(a.assetId, await this.ctx.decodeAudioData(a.source));
@@ -439,6 +443,29 @@ export class GraphEngine implements LabEngine {
     if (this.ctx) await this.ctx.suspend();
     await PlaybackNotificationManager.hide().catch(() => undefined);
     this.set('READY');
+  }
+
+  /** Live native-resource counts for the memory investigation. */
+  diagnostics(): Record<string, number> {
+    return {
+      cueSourcesLive: this.live.length,
+      trackSourcesLive: this.scheduledSegs.size,
+      buffersHeld: this.buffers.size,
+      buffersHeldBytes: this.pcmBytes(),
+      cueBuffers: this.cueBuffers.size,
+      decodesInFlight: this.decoding.size,
+      firedCueKeys: this.fired.size,
+      subscriptions: this.subscriptions.length,
+    };
+  }
+
+  setMusicGain(level: number): void {
+    const v = Math.min(1, Math.max(0, level));
+    if (this.level && this.ctx) {
+      this.level.gain.cancelScheduledValues(0);
+      this.level.gain.setValueAtTime(v, this.ctx.currentTime);
+    }
+    record(this.name, 'music_gain', { level: v });
   }
 
   snapshot(): EngineSnapshot {

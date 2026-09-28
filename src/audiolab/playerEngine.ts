@@ -46,6 +46,15 @@ export class PlayerEngine implements LabEngine {
   private started = new Set<number>();
   private preloaded = new Set<number>();
   /**
+   * Stage B transition investigation: for a NATURAL song change (not a seek),
+   * measure how long the new player takes to actually advance, and how much
+   * of the outgoing song was left when it was stopped. Together they separate
+   * real silence from clock-reporting behaviour.
+   */
+  private audibleWatch: { index: number; startedAt: number; base: number; natural: boolean } | null = null;
+  /** Instructor class level (0..1); ducking multiplies on top of it. */
+  private musicLevel = 1;
+  /**
    * Stage A, build 117: position was read from the player before iOS applied
    * seekTo, so for one tick the class clock read the old place (a stray
    * 30 ms blip of the previous song after a +60 s, and "resume actual 0").
@@ -129,7 +138,7 @@ export class PlayerEngine implements LabEngine {
     // A preloaded player is already parked at its start; seeking again would add latency.
     if (!(this.preloaded.has(i) && into < 0.05)) void p.seekTo(seg.sourceOffsetSeconds + into);
     this.preloaded.delete(i);
-    p.volume = seg.crossfadeInSeconds > 0 && into < seg.crossfadeInSeconds ? 0 : seg.gain * this.duck.level;
+    p.volume = seg.crossfadeInSeconds > 0 && into < seg.crossfadeInSeconds ? 0 : seg.gain * this.duck.level * this.musicLevel;
     p.play();
     this.started.add(i);
     if (!this.ref || i >= this.ref.index) {
@@ -139,11 +148,24 @@ export class PlayerEngine implements LabEngine {
       this.lastProgress = { time: -1, at: Date.now() };
     }
     record(this.name, 'segment_start', { index: i, classTime: Number(classTime.toFixed(3)), expected: seg.startSeconds });
+    this.audibleWatch = { index: i, startedAt: Date.now(), base: seg.sourceOffsetSeconds + into, natural: into < 0.05 && this.state === 'PLAYING' };
   }
 
   private tick = () => {
     if (this.state !== 'PLAYING') return;
     const now = this.position();
+    if (this.audibleWatch) {
+      const w = this.audibleWatch;
+      const p = this.players.get(w.index);
+      if (!p) this.audibleWatch = null;
+      else if (p.currentTime > w.base + 0.02) {
+        record(this.name, 'segment_audible', { index: w.index, msToAdvance: Date.now() - w.startedAt, natural: w.natural, playingFlag: p.playing });
+        this.audibleWatch = null;
+      } else if (Date.now() - w.startedAt > 5000) {
+        record(this.name, 'segment_audible', { index: w.index, msToAdvance: -1, natural: w.natural, playingFlag: p.playing });
+        this.audibleWatch = null;
+      }
+    }
     // Interruption detection: the reference player stopped although we are PLAYING.
     const refPlayer = this.ref ? this.players.get(this.ref.index) : undefined;
     const refSeg = this.ref ? this.placed[this.ref.index] : undefined;
@@ -172,6 +194,7 @@ export class PlayerEngine implements LabEngine {
       if (this.started.has(i) && now >= seg.endSeconds) {
         // Free finished players: a 45-minute class would otherwise hold one per segment.
         const done = this.players.get(i);
+        if (done) record(this.name, 'segment_tail', { index: i, sourceLeftMs: Math.round((seg.sourceOffsetSeconds + seg.playSeconds - done.currentTime) * 1000), wasPlaying: done.playing });
         done?.pause();
         done?.remove();
         this.players.delete(i);
@@ -192,7 +215,7 @@ export class PlayerEngine implements LabEngine {
       if (seg.crossfadeInSeconds > 0 && now < seg.startSeconds + seg.crossfadeInSeconds) env = Math.max(0, (now - seg.startSeconds) / seg.crossfadeInSeconds);
       if (seg.crossfadeOutSeconds > 0 && now > seg.endSeconds - seg.crossfadeOutSeconds) env = Math.max(0, (seg.endSeconds - now) / seg.crossfadeOutSeconds);
       const p = this.players.get(i);
-      if (p) p.volume = seg.gain * env * this.duck.level;
+      if (p) p.volume = seg.gain * env * this.duck.level * this.musicLevel;
     }
     // Cues: fire when due, measure lateness against the player clock.
     for (const c of pendingAfterSeek(this.cues, now - 0.5, this.fired)) {
@@ -287,6 +310,16 @@ export class PlayerEngine implements LabEngine {
     this.pausedAt = 0;
     this.ref = null;
     this.set('READY');
+  }
+
+  /** Live native-resource counts for the memory investigation. */
+  diagnostics(): Record<string, number> {
+    return { players: this.players.size, cuePlayers: this.cuePlayers.size, started: this.started.size, preloaded: this.preloaded.size, firedCueKeys: this.fired.size };
+  }
+
+  setMusicGain(level: number): void {
+    this.musicLevel = Math.min(1, Math.max(0, level));
+    record(this.name, 'music_gain', { level: this.musicLevel });
   }
 
   snapshot(): EngineSnapshot {
