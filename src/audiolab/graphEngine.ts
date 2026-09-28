@@ -29,6 +29,15 @@ const { AudioEventEmitter } = require('react-native-audio-api/lib/module/events'
 const LEAD = 0.15; // seconds of scheduling headroom before the first event
 const DUCK_ATTACK = 0.25;
 const DUCK_RELEASE = 0.6;
+/**
+ * Rolling window. A class can run 45 minutes over many tracks; decoding every
+ * track up front held roughly 570 MB of PCM for the 45-minute test and iOS
+ * killed the app on Play (Stage A, build 111). Tracks are now decoded shortly
+ * before they are needed, scheduled on the audio clock once inside the
+ * window, and their buffers are released after they finish.
+ */
+const WINDOW_SECONDS = 45;
+const PUMP_MS = 1000;
 
 export class GraphEngine implements LabEngine {
   readonly name = 'audio-graph';
@@ -36,6 +45,11 @@ export class GraphEngine implements LabEngine {
   private music: GainNode | null = null;
   private cueBus: GainNode | null = null;
   private buffers = new Map<string, AudioBuffer>();
+  private sources = new Map<string, string>();
+  private decoding = new Map<string, Promise<AudioBuffer>>();
+  private scheduledSegs = new Map<number, AudioBufferSourceNode>();
+  private pumpTimer: ReturnType<typeof setInterval> | null = null;
+  private pumping = false;
   private cueBuffers = new Map<string, AudioBuffer>();
   private placed: PlacedTrack[] = [];
   private cues: CueEvent[] = [];
@@ -82,11 +96,7 @@ export class GraphEngine implements LabEngine {
       this.cueBus = this.ctx.createGain();
       this.music.connect(this.ctx.destination);
       this.cueBus.connect(this.ctx.destination);
-      for (const t of tracks) {
-        const d0 = Date.now();
-        this.buffers.set(t.trackId, await this.ctx.decodeAudioData(t.source));
-        record(this.name, 'decoded', { track: t.trackId, ms: Date.now() - d0, seconds: this.buffers.get(t.trackId)!.duration });
-      }
+      for (const t of tracks) this.sources.set(t.trackId, t.source);
       for (const a of assets) this.cueBuffers.set(a.assetId, await this.ctx.decodeAudioData(a.source));
       this.placed = placed;
       this.cues = cues;
@@ -111,49 +121,121 @@ export class GraphEngine implements LabEngine {
   }
 
   private stopSources() {
-    for (const s of this.live) {
+    this.stopPump();
+    for (const src of [...this.live, ...this.scheduledSegs.values()]) {
       try {
-        s.stop();
+        src.stop();
       } catch {
         /* already ended */
       }
     }
     this.live = [];
+    this.scheduledSegs.clear();
     this.music?.gain.cancelScheduledValues(0);
     if (this.music && this.ctx) this.music.gain.setValueAtTime(this.masterLevel, this.ctx.currentTime);
   }
 
-  /** Schedule every track segment and pending cue from class time `from`. */
-  private schedule(from: number) {
-    const ctx = this.ctx!;
-    this.anchor = ctx.currentTime + LEAD - from;
-    const scheduleT0 = Date.now();
-    for (const p of this.placed) {
-      if (p.endSeconds <= from) continue;
-      const buf = this.buffers.get(p.trackId);
-      if (!buf) continue;
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const g = ctx.createGain();
-      src.connect(g);
-      g.connect(this.music!);
-      const into = Math.max(0, from - p.startSeconds);
-      const when = this.anchor + p.startSeconds + into;
-      const vol = p.gain;
-      // Crossfade in/out as real overlapping sources with gain ramps.
-      if (p.crossfadeInSeconds > 0 && into < p.crossfadeInSeconds) {
-        g.gain.setValueAtTime(vol * (into / p.crossfadeInSeconds), when);
-        g.gain.linearRampToValueAtTime(vol, this.anchor + p.startSeconds + p.crossfadeInSeconds);
-      } else g.gain.setValueAtTime(vol, when);
-      if (p.crossfadeOutSeconds > 0) {
-        const fadeStart = this.anchor + p.endSeconds - p.crossfadeOutSeconds;
-        g.gain.setValueAtTime(vol, Math.max(when, fadeStart));
-        g.gain.linearRampToValueAtTime(0, this.anchor + p.endSeconds);
+  private pcmBytes(): number {
+    let n = 0;
+    for (const b of this.buffers.values()) n += b.length * b.numberOfChannels * 4;
+    return n;
+  }
+
+  private decode(trackId: string): Promise<AudioBuffer> {
+    const have = this.buffers.get(trackId);
+    if (have) return Promise.resolve(have);
+    const pending = this.decoding.get(trackId);
+    if (pending) return pending;
+    const d0 = Date.now();
+    const job = this.ctx!.decodeAudioData(this.sources.get(trackId)!).then((buf) => {
+      this.buffers.set(trackId, buf);
+      this.decoding.delete(trackId);
+      record(this.name, 'decoded', {
+        track: trackId,
+        ms: Date.now() - d0,
+        seconds: buf.duration,
+        pcmBytes: buf.length * buf.numberOfChannels * 4,
+        heldBytes: this.pcmBytes(),
+        held: this.buffers.size,
+      });
+      return buf;
+    });
+    this.decoding.set(trackId, job);
+    return job;
+  }
+
+  /** Decode and schedule every segment entering the window; release buffers no longer needed. */
+  private async pump(): Promise<void> {
+    if (this.pumping || !this.ctx) return;
+    this.pumping = true;
+    try {
+      const ctx = this.ctx;
+      for (const p of this.placed) {
+        const now = this.position();
+        if (this.scheduledSegs.has(p.index) || p.endSeconds <= now || p.startSeconds > now + WINDOW_SECONDS) continue;
+        const buf = await this.decode(p.trackId);
+        if (this.ctx !== ctx || this.scheduledSegs.has(p.index)) return;
+        const nowAfter = this.position();
+        if (p.endSeconds <= nowAfter) continue;
+        // A segment that should already be sounding joins at the current position.
+        const into = Math.max(0, nowAfter + (this.state === 'PLAYING' ? 0.05 : 0) - p.startSeconds);
+        const when = this.anchor + p.startSeconds + into;
+        if (into > 0.05) record(this.name, 'segment_late', { index: p.index, lateMs: Math.round(into * 1000) });
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const g = ctx.createGain();
+        src.connect(g);
+        g.connect(this.music!);
+        const vol = p.gain;
+        // Crossfade in/out as real overlapping sources with gain ramps.
+        if (p.crossfadeInSeconds > 0 && into < p.crossfadeInSeconds) {
+          g.gain.setValueAtTime(vol * (into / p.crossfadeInSeconds), when);
+          g.gain.linearRampToValueAtTime(vol, this.anchor + p.startSeconds + p.crossfadeInSeconds);
+        } else g.gain.setValueAtTime(vol, when);
+        if (p.crossfadeOutSeconds > 0) {
+          const fadeStart = this.anchor + p.endSeconds - p.crossfadeOutSeconds;
+          g.gain.setValueAtTime(vol, Math.max(when, fadeStart));
+          g.gain.linearRampToValueAtTime(0, this.anchor + p.endSeconds);
+        }
+        src.start(when, p.sourceOffsetSeconds + into, p.playSeconds - into);
+        src.onEnded = () => {
+          record(this.name, 'track_end', { track: p.trackId, index: p.index, ctx: Number(ctx.currentTime.toFixed(4)), expected: Number((this.anchor + p.endSeconds).toFixed(4)) });
+          this.scheduledSegs.delete(p.index);
+        };
+        this.scheduledSegs.set(p.index, src);
+        record(this.name, 'segment_scheduled', { index: p.index, ctxWhen: Number(when.toFixed(4)), into: Number(into.toFixed(3)) });
       }
-      src.start(when, p.sourceOffsetSeconds + into, p.playSeconds - into);
-      src.onEnded = () => record(this.name, 'track_end', { track: p.trackId, index: p.index, ctx: Number(ctx.currentTime.toFixed(4)), expected: Number((this.anchor + p.endSeconds).toFixed(4)) });
-      this.live.push(src);
+      // Release buffers that no segment in the window still needs.
+      const t = this.position();
+      const needed = new Set(this.placed.filter((p) => p.endSeconds > t - 1 && p.startSeconds < t + WINDOW_SECONDS).map((p) => p.trackId));
+      for (const id of [...this.buffers.keys()]) {
+        if (!needed.has(id)) {
+          this.buffers.delete(id);
+          record(this.name, 'released', { track: id, heldBytes: this.pcmBytes(), held: this.buffers.size });
+        }
+      }
+    } catch (e) {
+      this.fail(e);
+    } finally {
+      this.pumping = false;
     }
+  }
+
+  private startPump() {
+    this.stopPump();
+    this.pumpTimer = setInterval(() => void this.pump(), PUMP_MS);
+  }
+
+  private stopPump() {
+    if (this.pumpTimer) clearInterval(this.pumpTimer);
+    this.pumpTimer = null;
+  }
+
+  /** Anchor class time `from` to the audio clock, schedule pending cues, and fill the track window. */
+  private async schedule(from: number) {
+    const ctx = this.ctx!;
+    const scheduleT0 = Date.now();
+    this.anchor = ctx.currentTime + LEAD - from;
     for (const c of pendingAfterSeek(this.cues, from, this.fired)) {
       const buf = this.cueBuffers.get(c.assetId);
       if (!buf) continue;
@@ -185,17 +267,24 @@ export class GraphEngine implements LabEngine {
       record(this.name, 'cue_scheduled', { key: c.key, classTime: c.timeSeconds, ctxWhen: Number(at.toFixed(4)), priority: c.priority });
       this.live.push(src);
     }
-    record(this.name, 'scheduled', { from, sources: this.live.length, jsMs: Date.now() - scheduleT0 });
+    await this.pump();
+    this.startPump();
+    record(this.name, 'scheduled', { from, cueSources: this.live.length, trackSources: this.scheduledSegs.size, jsMs: Date.now() - scheduleT0, heldBytes: this.pcmBytes() });
   }
 
   async play(fromSeconds = 0): Promise<void> {
     if (!this.ctx || this.state === 'LOADING' || this.state === 'ERROR') return;
     try {
       const t0 = Date.now();
-      await this.ctx.resume();
       this.stopSources();
+      this.pausedAt = fromSeconds;
+      // Decode what is needed first while the clock is still stopped, so the
+      // opening track starts on time instead of joining late.
+      const first = this.placed.filter((p) => p.endSeconds > fromSeconds && p.startSeconds < fromSeconds + 1);
+      await Promise.all(first.map((p) => this.decode(p.trackId)));
+      await this.ctx.resume();
       this.fired = new Set([...this.fired].filter((k) => !pendingAfterSeek(this.cues, fromSeconds, new Set()).some((c) => c.key === k)));
-      this.schedule(fromSeconds);
+      await this.schedule(fromSeconds);
       await PlaybackNotificationManager.show({ title: 'Cadence Audio Lab', state: 'playing', duration: totalDuration(this.placed), elapsedTime: fromSeconds });
       record(this.name, 'play', { from: fromSeconds, startLatencyMs: Date.now() - t0 + LEAD * 1000 });
       this.set('PLAYING');
@@ -215,6 +304,12 @@ export class GraphEngine implements LabEngine {
   async resume(): Promise<void> {
     if (!this.ctx || (this.state !== 'PAUSED' && this.state !== 'INTERRUPTED')) return;
     const before = this.pausedAt;
+    // A seek while paused cleared the scheduled sources: rebuild from the playhead.
+    if (this.scheduledSegs.size === 0 && this.live.length === 0) {
+      await this.play(before);
+      record(this.name, 'resume', { expected: Number(before.toFixed(3)), actual: Number(this.position().toFixed(3)), rescheduled: true });
+      return;
+    }
     await this.ctx.resume();
     await PlaybackNotificationManager.show({ state: 'playing', elapsedTime: before });
     this.set('PLAYING');

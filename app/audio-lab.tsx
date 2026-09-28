@@ -9,6 +9,7 @@ import type { EngineSnapshot, LabEngine } from '@/audiolab/engine';
 import { GraphEngine } from '@/audiolab/graphEngine';
 import { clearLab, exportRun, getTest, jsHeapBytes, labEvents, record, setTest, subscribeLab, summarize } from '@/audiolab/metrics';
 import { PlayerEngine } from '@/audiolab/playerEngine';
+import { readPrevious, rotateOnOpen, saveCurrent } from '@/audiolab/persist';
 import { type CueSpec, expandCues, formatClock, placeTracks, resolveCollisions, type TimelineTrack, totalDuration } from '@/audiolab/timeline';
 import { Button, Card, colors, Screen, space, Text } from '@/ui';
 
@@ -68,6 +69,20 @@ function buildScenario(s: Scenario, tracks: PlayableTrack[], crossfade: number) 
   return { placed, total, cues: resolved.play, dropped: resolved.dropped.length, deferred: resolved.deferred.length, seq };
 }
 
+function deviceInfo(engineName: string, test: string) {
+  return {
+    os: Platform.OS,
+    osVersion: String(Platform.Version),
+    model: Device.modelName ?? null,
+    modelId: Device.modelId ?? null,
+    physicalDevice: Device.isDevice ? 'yes' : 'no',
+    build: Application.nativeBuildVersion ?? null,
+    version: Application.nativeApplicationVersion ?? null,
+    engine: engineName,
+    test,
+  };
+}
+
 export default function AudioLab() {
   const router = useRouter();
   const [engineName, setEngineName] = useState<EngineName>('graph');
@@ -75,12 +90,24 @@ export default function AudioLab() {
   const [crossfade, setCrossfade] = useState(0);
   const [shortLinks, setShortLinks] = useState(false);
   const [test, setTestState] = useState(getTest());
+  const [hasPrevious, setHasPrevious] = useState(false);
   const [tracks, setTracks] = useState<PlayableTrack[]>([]);
   const [info, setInfo] = useState<string>('');
   const [snap, setSnap] = useState<EngineSnapshot | null>(null);
   const engine = useRef<LabEngine | null>(null);
   const [totalSeconds, setTotalSeconds] = useState(0);
   const events = useSyncExternalStore(subscribeLab, labEvents, labEvents);
+
+  // Crash-safe log: keep the last session's run, then save this one every 5 s.
+  const infoRef = useRef({ engineName, test });
+  useEffect(() => {
+    infoRef.current = { engineName, test };
+  }, [engineName, test]);
+  useEffect(() => {
+    void rotateOnOpen().then(setHasPrevious);
+    const s = setInterval(() => void saveCurrent(deviceInfo(infoRef.current.engineName, infoRef.current.test)), 5000);
+    return () => clearInterval(s);
+  }, []);
 
   useEffect(() => {
     void listPlayable().then((t) => {
@@ -268,20 +295,20 @@ export default function AudioLab() {
             title="Share results"
             onPress={() =>
               void Share.share({
-                message: exportRun({
-                  os: Platform.OS,
-                  osVersion: String(Platform.Version),
-                  model: Device.modelName ?? null,
-                  modelId: Device.modelId ?? null,
-                  physicalDevice: Device.isDevice ? 'yes' : 'no',
-                  engine: engine.current?.name ?? engineName,
-                  test,
-                  build: Application.nativeBuildVersion ?? null,
-                  version: Application.nativeApplicationVersion ?? null,
-                }),
+                message: exportRun(deviceInfo(engine.current?.name ?? engineName, test)),
               })
             }
           />
+          {hasPrevious ? (
+            <Button
+              testID="lab-share-previous"
+              title="Share previous run (use after a crash)"
+              variant="secondary"
+              onPress={() => void readPrevious().then((m) => {
+                  if (m) void Share.share({ message: m });
+                })}
+            />
+          ) : null}
           <Button title="Clear log" variant="ghost" onPress={clearLab} />
         </Card>
         <Button title="Clear lab audio cache" variant="ghost" onPress={() => void clearLabCache()} />

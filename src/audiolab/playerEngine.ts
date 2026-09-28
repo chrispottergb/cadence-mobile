@@ -101,7 +101,11 @@ export class PlayerEngine implements LabEngine {
     this.placed.forEach((seg, i) => {
       if (!this.started.has(i) && now + 1e-3 >= seg.startSeconds && now < seg.endSeconds) this.startSegment(i, now);
       if (this.started.has(i) && now >= seg.endSeconds) {
-        this.players.get(i)?.pause();
+        // Free finished players: a 45-minute class would otherwise hold one per segment.
+        const done = this.players.get(i);
+        done?.pause();
+        done?.remove();
+        this.players.delete(i);
         this.started.delete(i);
         record(this.name, 'track_end', { index: i, lateMs: Math.round((now - seg.endSeconds) * 1000) });
       }
