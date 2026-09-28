@@ -17,6 +17,12 @@ import { type CueEvent, pendingAfterSeek, type PlacedTrack, totalDuration, track
 const TICK_MS = 20;
 const DUCK_ATTACK_MS = 250;
 const DUCK_RELEASE_MS = 600;
+/**
+ * Load the next segment's player this far ahead of its start. Stage A,
+ * build 116, iPhone 16 Pro: creating the player at the boundary stalled the
+ * class clock ~1.3 s (audible gap) at the song 2 -> 3 change.
+ */
+const PRELOAD_SECONDS = 6;
 
 export class PlayerEngine implements LabEngine {
   readonly name = 'media-player';
@@ -34,6 +40,7 @@ export class PlayerEngine implements LabEngine {
   private pausedAt = 0;
   private duck = { level: 1, target: 1, t0: 0, from: 1, ms: 0 };
   private started = new Set<number>();
+  private preloaded = new Set<number>();
 
   constructor(private readonly onChange: () => void = () => {}) {}
 
@@ -86,7 +93,9 @@ export class PlayerEngine implements LabEngine {
     const seg = this.placed[i]!;
     const p = this.player(i);
     const into = Math.max(0, classTime - seg.startSeconds);
-    void p.seekTo(seg.sourceOffsetSeconds + into);
+    // A preloaded player is already parked at its start; seeking again would add latency.
+    if (!(this.preloaded.has(i) && into < 0.05)) void p.seekTo(seg.sourceOffsetSeconds + into);
+    this.preloaded.delete(i);
     p.volume = seg.crossfadeInSeconds > 0 && into < seg.crossfadeInSeconds ? 0 : seg.gain * this.duck.level;
     p.play();
     this.started.add(i);
@@ -97,8 +106,15 @@ export class PlayerEngine implements LabEngine {
   private tick = () => {
     if (this.state !== 'PLAYING') return;
     const now = this.position();
-    // Tracks: start any segment whose time has come; stop finished ones.
+    // Tracks: preload what is coming up, start any segment whose time has come, stop finished ones.
     this.placed.forEach((seg, i) => {
+      if (!this.started.has(i) && !this.preloaded.has(i) && seg.startSeconds > now && seg.startSeconds - now <= PRELOAD_SECONDS) {
+        const next = this.player(i);
+        next.volume = 0;
+        void next.seekTo(seg.sourceOffsetSeconds);
+        this.preloaded.add(i);
+        record(this.name, 'preload', { index: i, leadSeconds: Number((seg.startSeconds - now).toFixed(3)) });
+      }
       if (!this.started.has(i) && now + 1e-3 >= seg.startSeconds && now < seg.endSeconds) this.startSegment(i, now);
       if (this.started.has(i) && now >= seg.endSeconds) {
         // Free finished players: a 45-minute class would otherwise hold one per segment.
@@ -164,9 +180,17 @@ export class PlayerEngine implements LabEngine {
   async play(fromSeconds = 0): Promise<void> {
     if (this.state === 'LOADING' || this.state === 'ERROR') return;
     const t0 = Date.now();
-    this.players.forEach((p) => p.pause());
+    // Start clean: free every player (including preloaded ones a seek skipped past).
+    this.players.forEach((p) => {
+      p.pause();
+      p.remove();
+    });
+    this.players.clear();
     this.started.clear();
+    this.preloaded.clear();
     this.ref = null;
+    // Seek policy: cues before the start point are skipped, never played late.
+    this.fired = new Set(this.cues.filter((c) => c.timeSeconds < fromSeconds - 1e-3).map((c) => c.key));
     this.duck = { level: 1, target: 1, t0: 0, from: 1, ms: 0 };
     for (const seg of tracksAt(this.placed, fromSeconds)) this.startSegment(seg.index, fromSeconds);
     const first = this.players.get(tracksAt(this.placed, fromSeconds)[0]?.index ?? -1);
