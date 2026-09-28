@@ -41,6 +41,15 @@ export class PlayerEngine implements LabEngine {
   private duck = { level: 1, target: 1, t0: 0, from: 1, ms: 0 };
   private started = new Set<number>();
   private preloaded = new Set<number>();
+  /**
+   * Stage A, build 117: position was read from the player before iOS applied
+   * seekTo, so for one tick the class clock read the old place (a stray
+   * 30 ms blip of the previous song after a +60 s, and "resume actual 0").
+   * Until the player confirms the seek, the clock holds at the target.
+   */
+  private seekPendingSince: number | null = null;
+  /** Stage A, build 117 T3: iOS stopped the player; the engine kept reporting PLAYING. */
+  private lastPlayingSeen = 0;
 
   constructor(private readonly onChange: () => void = () => {}) {}
 
@@ -86,6 +95,19 @@ export class PlayerEngine implements LabEngine {
     if (this.state !== 'PLAYING' || !this.ref) return this.pausedAt;
     const p = this.players.get(this.ref.index);
     if (!p) return this.pausedAt;
+    if (this.seekPendingSince !== null) {
+      const applied = Math.abs(p.currentTime - this.ref.baseSource) < 0.5;
+      if (!applied && Date.now() - this.seekPendingSince < 2000) return this.ref.baseClass;
+      if (!applied) record(this.name, 'seek_unconfirmed', { index: this.ref.index, want: this.ref.baseSource, have: Number(p.currentTime.toFixed(3)) });
+      else
+        record(this.name, 'seek_confirmed', {
+          index: this.ref.index,
+          ms: Date.now() - this.seekPendingSince,
+          classTarget: Number(this.ref.baseClass.toFixed(3)),
+          errorMs: Math.round((p.currentTime - this.ref.baseSource) * 1000),
+        });
+      this.seekPendingSince = null;
+    }
     return this.ref.baseClass + (p.currentTime - this.ref.baseSource);
   }
 
@@ -99,13 +121,30 @@ export class PlayerEngine implements LabEngine {
     p.volume = seg.crossfadeInSeconds > 0 && into < seg.crossfadeInSeconds ? 0 : seg.gain * this.duck.level;
     p.play();
     this.started.add(i);
-    if (!this.ref || i >= this.ref.index) this.ref = { index: i, baseClass: seg.startSeconds + into, baseSource: seg.sourceOffsetSeconds + into };
+    if (!this.ref || i >= this.ref.index) {
+      this.ref = { index: i, baseClass: seg.startSeconds + into, baseSource: seg.sourceOffsetSeconds + into };
+      this.seekPendingSince = Date.now();
+    }
     record(this.name, 'segment_start', { index: i, classTime: Number(classTime.toFixed(3)), expected: seg.startSeconds });
   }
 
   private tick = () => {
     if (this.state !== 'PLAYING') return;
     const now = this.position();
+    // Interruption detection: the reference player stopped although we are PLAYING.
+    const refPlayer = this.ref ? this.players.get(this.ref.index) : undefined;
+    const refSeg = this.ref ? this.placed[this.ref.index] : undefined;
+    if (refPlayer && refSeg && this.seekPendingSince === null) {
+      if (refPlayer.playing) this.lastPlayingSeen = Date.now();
+      else if (now < refSeg.endSeconds - 0.3 && Date.now() - this.lastPlayingSeen > 750) {
+        this.pausedAt = now;
+        this.stopLoop();
+        for (const i of this.started) this.players.get(i)?.pause();
+        record(this.name, 'interruption', { type: 'began', source: 'player_stopped', position: Number(now.toFixed(3)) });
+        this.set('INTERRUPTED');
+        return;
+      }
+    }
     // Tracks: preload what is coming up, start any segment whose time has come, stop finished ones.
     this.placed.forEach((seg, i) => {
       if (!this.started.has(i) && !this.preloaded.has(i) && seg.startSeconds > now && seg.startSeconds - now <= PRELOAD_SECONDS) {
@@ -195,6 +234,7 @@ export class PlayerEngine implements LabEngine {
     for (const seg of tracksAt(this.placed, fromSeconds)) this.startSegment(seg.index, fromSeconds);
     const first = this.players.get(tracksAt(this.placed, fromSeconds)[0]?.index ?? -1);
     first?.setActiveForLockScreen(true, { title: 'Cadence Audio Lab', artist: 'Cadence' });
+    this.lastPlayingSeen = Date.now();
     this.set('PLAYING');
     this.startLoop();
     record(this.name, 'play', { from: fromSeconds, startLatencyMs: Date.now() - t0 });
@@ -212,7 +252,8 @@ export class PlayerEngine implements LabEngine {
     if (this.state !== 'PAUSED' && this.state !== 'INTERRUPTED') return;
     const at = this.pausedAt;
     await this.play(at);
-    record(this.name, 'resume', { expected: Number(at.toFixed(3)), actual: Number(this.position().toFixed(3)) });
+    // The measured landing point is the following 'seek_confirmed' event (errorMs).
+    record(this.name, 'resume', { expected: Number(at.toFixed(3)) });
   }
 
   async seek(seconds: number): Promise<void> {
