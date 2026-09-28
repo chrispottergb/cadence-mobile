@@ -38,6 +38,15 @@ const DUCK_RELEASE = 0.6;
  */
 const WINDOW_SECONDS = 45;
 const PUMP_MS = 1000;
+/** Rapid seeks (a finger on +60 s) collapse into one reposition after this much quiet. */
+const SEEK_SETTLE_MS = 250;
+
+/** A decode that is no longer needed by the time it would run or finish. */
+class StaleDecode extends Error {
+  constructor() {
+    super('stale decode');
+  }
+}
 
 export class GraphEngine implements LabEngine {
   readonly name = 'audio-graph';
@@ -58,6 +67,22 @@ export class GraphEngine implements LabEngine {
    * playing on top of the new position until the app ran out of memory.
    */
   private gen = 0;
+  /**
+   * Stage A, build 114: spamming +60 s still crashed. Each tap targeted a
+   * different track and started its own ~70 MB decode; ten taps meant ten
+   * decodes in flight and ten buffers held. Decodes now run one at a time,
+   * are skipped if no longer needed, and are discarded if they finish late.
+   */
+  private decodeChain: Promise<unknown> = Promise.resolve();
+  private seeking = false;
+  /** True while play() repositions: the playhead is pausedAt until the new anchor is set. */
+  private holding = false;
+  /** Class time playback last started from; the playhead never reads earlier during the start-up lead. */
+  private playFrom = 0;
+  private seekResume = false;
+  private seekTimer: ReturnType<typeof setTimeout> | null = null;
+  private seekRelease: (() => void) | null = null;
+  private seekToken = 0;
   private cueBuffers = new Map<string, AudioBuffer>();
   private placed: PlacedTrack[] = [];
   private cues: CueEvent[] = [];
@@ -124,8 +149,9 @@ export class GraphEngine implements LabEngine {
 
   private position(): number {
     if (!this.ctx) return 0;
+    if (this.seeking || this.holding) return this.pausedAt;
     if (this.state === 'PAUSED' || this.state === 'INTERRUPTED' || this.state === 'READY') return this.pausedAt;
-    return Math.max(0, this.ctx.currentTime - this.anchor);
+    return Math.max(this.playFrom, this.ctx.currentTime - this.anchor);
   }
 
   private stopSources() {
@@ -151,15 +177,30 @@ export class GraphEngine implements LabEngine {
     return n;
   }
 
+  /** Is this track needed by any segment near the current (or pending) playhead? */
+  private neededSoon(trackId: string): boolean {
+    const t = this.position();
+    return this.placed.some((p) => p.trackId === trackId && p.endSeconds > t - 1 && p.startSeconds < t + WINDOW_SECONDS);
+  }
+
   private decode(trackId: string): Promise<AudioBuffer> {
     const have = this.buffers.get(trackId);
     if (have) return Promise.resolve(have);
     const pending = this.decoding.get(trackId);
     if (pending) return pending;
-    const d0 = Date.now();
-    const job = this.ctx!.decodeAudioData(this.sources.get(trackId)!).then((buf) => {
+    // One decode at a time; each checks it is still wanted before and after.
+    const job = this.decodeChain.then(async () => {
+      if (!this.ctx || !this.neededSoon(trackId)) {
+        record(this.name, 'decode_skipped', { track: trackId });
+        throw new StaleDecode();
+      }
+      const d0 = Date.now();
+      const buf = await this.ctx.decodeAudioData(this.sources.get(trackId)!);
+      if (!this.ctx || !this.neededSoon(trackId)) {
+        record(this.name, 'decode_discarded', { track: trackId, ms: Date.now() - d0 });
+        throw new StaleDecode();
+      }
       this.buffers.set(trackId, buf);
-      this.decoding.delete(trackId);
       record(this.name, 'decoded', {
         track: trackId,
         ms: Date.now() - d0,
@@ -170,8 +211,10 @@ export class GraphEngine implements LabEngine {
       });
       return buf;
     });
-    this.decoding.set(trackId, job);
-    return job;
+    const tracked = job.finally(() => this.decoding.delete(trackId));
+    this.decoding.set(trackId, tracked);
+    this.decodeChain = tracked.catch(() => undefined);
+    return tracked;
   }
 
   /** Decode and schedule every segment entering the window; release buffers no longer needed. */
@@ -233,7 +276,7 @@ export class GraphEngine implements LabEngine {
         }
       }
     } catch (e) {
-      this.fail(e);
+      if (!(e instanceof StaleDecode)) this.fail(e);
     } finally {
       // Only the current generation owns the flag; a stale pump must not clear a newer one's.
       if (gen === this.gen) this.pumping = false;
@@ -255,6 +298,8 @@ export class GraphEngine implements LabEngine {
     const ctx = this.ctx!;
     const scheduleT0 = Date.now();
     this.anchor = ctx.currentTime + LEAD - from;
+    this.playFrom = from;
+    this.holding = false;
     for (const c of pendingAfterSeek(this.cues, from, this.fired)) {
       const buf = this.cueBuffers.get(c.assetId);
       if (!buf) continue;
@@ -300,10 +345,16 @@ export class GraphEngine implements LabEngine {
       this.stopSources();
       const gen = this.gen;
       this.pausedAt = fromSeconds;
+      this.holding = true;
       // Decode what is needed first while the clock is still stopped, so the
       // opening track starts on time instead of joining late.
       const first = this.placed.filter((p) => p.endSeconds > fromSeconds && p.startSeconds < fromSeconds + 1);
-      await Promise.all(first.map((p) => this.decode(p.trackId)));
+      try {
+        await Promise.all(first.map((p) => this.decode(p.trackId)));
+      } catch (e) {
+        if (e instanceof StaleDecode) return; // a newer seek/stop took over
+        throw e;
+      }
       if (gen !== this.gen || !this.ctx) return; // superseded by a newer seek/stop while decoding
       await this.ctx.resume();
       if (gen !== this.gen) return;
@@ -342,15 +393,46 @@ export class GraphEngine implements LabEngine {
 
   async seek(seconds: number): Promise<void> {
     if (!this.ctx) return;
-    const wasPlaying = this.state === 'PLAYING';
+    // A seek during a settling seek keeps the original intent to keep playing.
+    const wasPlaying = this.state === 'PLAYING' || (this.seeking && this.seekResume);
     this.stopSources();
     this.pausedAt = Math.max(0, Math.min(seconds, totalDuration(this.placed)));
+    this.seeking = true;
+    this.seekResume = wasPlaying;
     record(this.name, 'seek', { to: this.pausedAt });
-    if (wasPlaying) await this.play(this.pausedAt);
+    this.onChange();
+    // Supersede any settling seek: its promise resolves and it does nothing more.
+    if (this.seekTimer) clearTimeout(this.seekTimer);
+    this.seekRelease?.();
+    const token = ++this.seekToken;
+    await new Promise<void>((resolve) => {
+      this.seekRelease = resolve;
+      this.seekTimer = setTimeout(() => {
+        this.seekTimer = null;
+        this.seekRelease = null;
+        resolve();
+      }, SEEK_SETTLE_MS);
+    });
+    if (token !== this.seekToken || !this.seeking) return; // a later seek (or stop) owns the reposition
+    this.seeking = false;
+    record(this.name, 'seek_settled', { to: this.pausedAt, resume: this.seekResume });
+    if (this.seekResume) await this.play(this.pausedAt);
     else this.onChange();
   }
 
+  private cancelSeek() {
+    if (this.seekTimer) clearTimeout(this.seekTimer);
+    this.seekTimer = null;
+    this.seekToken += 1;
+    this.seekRelease?.();
+    this.seekRelease = null;
+    this.seeking = false;
+    this.holding = false;
+    this.seekResume = false;
+  }
+
   async stop(): Promise<void> {
+    this.cancelSeek();
     this.stopSources();
     this.fired.clear();
     this.pausedAt = 0;
@@ -377,6 +459,7 @@ export class GraphEngine implements LabEngine {
   }
 
   async dispose(): Promise<void> {
+    this.cancelSeek();
     this.stopSources();
     for (const sub of this.subscriptions) {
       try {

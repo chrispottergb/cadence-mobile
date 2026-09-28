@@ -145,6 +145,7 @@ describe('GraphEngine rolling window', () => {
     await play;
     // Three +60 s taps in quick succession, each landing before decodes resolve.
     const seeks = [e.seek(60), e.seek(120), e.seek(180)];
+    await new Promise((r) => setTimeout(r, 300)); // seek settle window
     await settle();
     await Promise.all(seeks);
     await settle();
@@ -152,5 +153,29 @@ describe('GraphEngine rolling window', () => {
     expect(live.length).toBe(1);
     // The survivor is the track at 180 s (track index 1, 60 s in).
     expect(live[0]!.offset).toBeCloseTo(60, 0);
+  });
+  it('spamming +60 s runs at most one decode at a time and ends with one track at the final position', async () => {
+    const e = await loaded();
+    const play = e.play(0);
+    await settle();
+    await play;
+    const seeks: Promise<void>[] = [];
+    let target = 0;
+    for (let i = 0; i < 10; i++) {
+      target += 60;
+      seeks.push(e.seek(target));
+      // Decodes never pile up: at most one is in flight at any moment.
+      expect(mockPendingDecodes.length).toBeLessThanOrEqual(1);
+    }
+    // Let the seek settle window pass, then drain decodes.
+    await new Promise((r) => setTimeout(r, 300));
+    await settle();
+    await Promise.all(seeks);
+    await settle();
+    const live = audible();
+    expect(live.length).toBe(1);
+    // 600 s = track index 5, 0 s in.
+    expect(live[0]!.offset).toBeCloseTo(0, 0);
+    expect(e.snapshot().positionSeconds).toBeGreaterThanOrEqual(600);
   });
 });
