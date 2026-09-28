@@ -20,8 +20,11 @@ Read this first in a new session, then `guided-builder-brief.md`.
   Android = PHYSICAL DEVICE UNVERIFIED.
 - Stage B checkpoint delivered (engine-independent model, persistence, first
   Builder, global player). Timeline-editor feature work now PAUSED.
-- NEXT TASK: implement the guided Class Builder UX in `guided-builder-brief.md`,
-  then build for TestFlight and STOP for UX review.
+- Guided Class Builder (`guided-builder-brief.md`): IMPLEMENTED on branch
+  `claude/guided-class-builder-ux-mqgmfg`, CI-equivalent checks green (lint,
+  typecheck, 89 jest tests incl. component tests of the brief's test list).
+  NOT yet device-tested. NEXT: TestFlight build from that branch, then STOP
+  for product-owner UX review. Do not begin unrelated features.
 
 ## Where the code is
 
@@ -36,8 +39,16 @@ Read this first in a new session, then `guided-builder-brief.md`.
 - Engines: `src/audiolab/playerEngine.ts` (expo-audio), `src/audiolab/graphEngine.ts`
   (react-native-audio-api; rolling decode window, generation guards).
 - Persistence: `src/data/soundtracks.ts` (revision-checked saves).
-- Current Builder (becomes Advanced Edit): `app/soundtracks/[id].tsx`; list
-  `app/soundtracks/index.tsx`; entry from `app/(instructor)/library.tsx`.
+- Guided Builder: plan + compiler `src/soundtrack/guided.ts` (GuidedPlan ->
+  ClassSoundtrack; stored as optional opaque `guide` on the document with a
+  timeline fingerprint so Advanced Edit changes are detected, never silently
+  overwritten), templates `src/soundtrack/templates.ts`, screens
+  `src/builder/*` (GuidedBuilder, MusicPicker, CueEditor, RunningClass).
+- Routes: list `app/soundtracks/index.tsx` ("Classes", from Library);
+  `soundtracks/new` (guided, new); `soundtracks/[id]` (guided, opens on
+  Overview); `soundtracks/[id]/advanced` (the Stage B timeline editor, moved
+  unchanged); `soundtracks/[id]/run` (class-running view, keeps screen awake;
+  the mini-player opens it and hides on it).
 - Audio Lab (dev test harness, guided tests + exports): `app/audio-lab.tsx`,
   `src/audiolab/guide.ts`, `metrics.ts`, `persist.ts`.
 
