@@ -52,6 +52,8 @@ export interface PlaybackEngine {
   stop(): Promise<void>;
   /** Instructor music level for the class (0..1). Never the device's volume. Cue ducking is relative to it. */
   setMusicGain(level: number): void;
+  /** What the lock screen / Control Center shows while this engine plays. */
+  setNowPlaying(meta: { title: string; artist?: string }): void;
   snapshot(): EngineSnapshot;
   /** Investigation only (Stage A/B evidence); product code must not depend on it. */
   diagnostics?(): Record<string, number>;

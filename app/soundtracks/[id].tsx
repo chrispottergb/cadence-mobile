@@ -2,11 +2,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, View } from 'react-native';
 
-import { cueSeconds, type CueId, listPlayable, loadCueAssets, type PlayableTrack, resolveTrack } from '@/audiolab/assets';
+import { cueSeconds, type CueId, listPlayable, type PlayableTrack } from '@/audiolab/assets';
 import { formatClock } from '@/audiolab/timeline';
 import { loadSoundtrack, saveSoundtrack } from '@/data/soundtracks';
-import { createEngine } from '@/playback/create';
-import type { EngineKind, EngineSnapshot, PlaybackEngine } from '@/playback/engine';
+import type { EngineKind } from '@/playback/engine';
+import { isClassActive, seekBy, startClass, stopClass, togglePlay, useClassPlayback } from '@/playback/session';
 import {
   addCue,
   addSection,
@@ -58,13 +58,13 @@ export default function Builder() {
   const [library, setLibrary] = useState<PlayableTrack[]>([]);
   const [picking, setPicking] = useState<'music' | 'cue' | null>(null);
   const [engineKind, setEngineKind] = useState<EngineKind>('media-player');
-  const engine = useRef<PlaybackEngine | null>(null);
-  const [snap, setSnap] = useState<EngineSnapshot | null>(null);
   const [previewStale, setPreviewStale] = useState(false);
-  const [active, setActive] = useState(false);
-  const [preparing, setPreparing] = useState(false);
-  /** Preview run id: a newer preview (or Stop) makes older in-flight preparation drop itself. */
-  const run = useRef(0);
+  // Playback lives in the app-wide class player (mini-player), not in this screen.
+  const cls = useClassPlayback();
+  const mine = cls.soundtrackId === id;
+  const snap = mine ? cls.snapshot : null;
+  const active = mine && isClassActive(cls);
+  const preparing = mine && cls.preparing;
   /** Timeline zoom in pixels per second; pinch or the zoom buttons change it. Display only. */
   const [px, setPx] = useState(DEFAULT_PX);
   const pinch = useRef<{ dist: number; px: number } | null>(null);
@@ -80,13 +80,6 @@ export default function Builder() {
     });
     // Real gym tracks only here (demo tracks are an Audio Lab tool).
     void listPlayable().then((t) => setLibrary(t.filter((x) => x.demo === undefined)));
-    const i = setInterval(() => engine.current && setSnap(engine.current.snapshot()), 250);
-    return () => {
-      clearInterval(i);
-      const e = engine.current;
-      engine.current = null;
-      void e?.stop().then(() => e.dispose());
-    };
   }, [id]);
 
   const edit = useCallback((f: (d: ClassSoundtrack) => ClassSoundtrack) => {
@@ -117,79 +110,33 @@ export default function Builder() {
   const playing = snap?.state === 'PLAYING';
   const playhead = active && snap && snap.state !== 'IDLE' ? snap.positionSeconds : cursor;
 
-  const preview = async (from: number) => {
-    if (!doc) return;
-    const plan = toPlan(doc, cueSec);
-    if (!plan.placed.length) {
-      setStatus('Add some music first.');
-      return;
-    }
-    const myRun = ++run.current;
-    const prev = engine.current;
-    engine.current = null;
-    setActive(false);
-    if (prev) {
-      await prev.stop().catch(() => undefined);
-      await prev.dispose();
-    }
-    setPreparing(true);
-    setStatus('Preparing preview...');
-    let e: PlaybackEngine | null = null;
-    try {
-      const byId = new Map(library.map((t) => [t.trackId, t]));
-      const unique = [...new Set(plan.placed.map((p) => p.trackId))];
-      const loaded = [];
-      for (const tid of unique) {
-        const t = byId.get(tid);
-        if (!t) throw new Error('A track in this soundtrack is no longer available to you.');
-        loaded.push(await resolveTrack(t, 'download'));
-      }
-      if (myRun !== run.current) return; // superseded while downloading
-      e = createEngine(engineKind);
-      await e.load(plan.placed, loaded, plan.cues, await loadCueAssets());
-      if (myRun !== run.current) {
-        await e.dispose(); // superseded while loading: never becomes audible
-        return;
-      }
-      engine.current = e;
-      setActive(true);
-      e.setMusicGain(doc.musicGain);
-      await e.play(from);
-      setPreviewStale(false);
-      setStatus(dirty ? 'Previewing (unsaved changes)' : 'Previewing');
-    } catch (err) {
-      if (e && engine.current !== e) await e.dispose().catch(() => undefined);
-      setStatus(err instanceof Error ? err.message : 'Preview failed.');
-    } finally {
-      if (myRun === run.current) setPreparing(false);
-    }
+  const preview = (from: number) => {
+    if (!doc || !id) return;
+    setPreviewStale(false);
+    void startClass({
+      soundtrackId: id,
+      title: doc.name,
+      plan: toPlan(doc, cueSec),
+      sections: doc.sections,
+      musicGain: doc.musicGain,
+      library,
+      fromSeconds: from,
+      engineKind,
+    });
   };
 
   const nudge = (d: number) => {
-    const e = engine.current;
-    if (e) void e.seek(e.snapshot().positionSeconds + d);
+    if (active) seekBy(d);
     else setCursor((c) => Math.max(0, Math.min(doc?.durationSeconds ?? 0, c + d)));
   };
 
-  const togglePlay = () => {
-    const e = engine.current;
-    const st = e?.snapshot().state;
-    if (e && st === 'PLAYING') void e.pause();
-    else if (e && (st === 'PAUSED' || st === 'INTERRUPTED')) void e.resume();
-    else if (!preparing) void preview(cursor);
+  const onPlay = () => {
+    if (active && !preparing) togglePlay();
+    else if (!preparing) preview(cursor);
   };
 
   const stopPreview = async () => {
-    run.current += 1; // cancels any preview still preparing
-    setPreparing(false);
-    const e = engine.current;
-    if (!e) return;
-    const at = e.snapshot().positionSeconds;
-    engine.current = null;
-    setActive(false);
-    await e.stop();
-    await e.dispose();
-    setSnap(null);
+    const at = await stopClass();
     setCursor(Math.round(at));
   };
 
@@ -232,7 +179,7 @@ export default function Builder() {
         <Field testID="st-title" value={doc.name} onChangeText={(v) => edit((d) => ({ ...d, name: v }))} maxLength={80} />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
           <Text muted style={{ flex: 1 }}>
-            {status}
+            {mine && cls.message ? cls.message : status}
             {dirty ? ' · unsaved changes' : ''}
           </Text>
           <Button testID="st-save" title="Save" onPress={save} disabled={!dirty} />
@@ -343,7 +290,7 @@ export default function Builder() {
               <Button
                 testID="st-preview"
                 title={preparing ? 'Preparing...' : playing ? 'Pause' : snap?.state === 'PAUSED' || snap?.state === 'INTERRUPTED' ? 'Resume' : 'Preview from here'}
-                onPress={togglePlay}
+                onPress={onPlay}
               />
             </View>
             <View style={{ flex: 1 }}>

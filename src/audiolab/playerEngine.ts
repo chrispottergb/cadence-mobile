@@ -54,6 +54,7 @@ export class PlayerEngine implements LabEngine {
   private audibleWatch: { index: number; startedAt: number; base: number; natural: boolean } | null = null;
   /** Instructor class level (0..1); ducking multiplies on top of it. */
   private musicLevel = 1;
+  private nowPlaying = { title: 'Cadence Audio Lab', artist: 'Cadence' };
   /**
    * Stage A, build 117: position was read from the player before iOS applied
    * seekTo, so for one tick the class clock read the old place (a stray
@@ -143,6 +144,9 @@ export class PlayerEngine implements LabEngine {
     this.started.add(i);
     if (!this.ref || i >= this.ref.index) {
       this.ref = { index: i, baseClass: seg.startSeconds + into, baseSource: seg.sourceOffsetSeconds + into };
+      // The lock screen follows the player that is actually sounding; before
+      // this, it stayed on the first song's (released) player after a song change.
+      p.setActiveForLockScreen(true, this.nowPlaying);
       this.seekPendingSince = Date.now();
       this.graceUntil = Date.now() + GRACE_MS;
       this.lastProgress = { time: -1, at: Date.now() };
@@ -269,8 +273,6 @@ export class PlayerEngine implements LabEngine {
     this.fired = new Set(this.cues.filter((c) => c.timeSeconds < fromSeconds - 1e-3).map((c) => c.key));
     this.duck = { level: 1, target: 1, t0: 0, from: 1, ms: 0 };
     for (const seg of tracksAt(this.placed, fromSeconds)) this.startSegment(seg.index, fromSeconds);
-    const first = this.players.get(tracksAt(this.placed, fromSeconds)[0]?.index ?? -1);
-    first?.setActiveForLockScreen(true, { title: 'Cadence Audio Lab', artist: 'Cadence' });
     this.graceUntil = Date.now() + GRACE_MS;
     this.lastProgress = { time: -1, at: Date.now() };
     this.set('PLAYING');
@@ -315,6 +317,10 @@ export class PlayerEngine implements LabEngine {
   /** Live native-resource counts for the memory investigation. */
   diagnostics(): Record<string, number> {
     return { players: this.players.size, cuePlayers: this.cuePlayers.size, started: this.started.size, preloaded: this.preloaded.size, firedCueKeys: this.fired.size };
+  }
+
+  setNowPlaying(meta: { title: string; artist?: string }): void {
+    this.nowPlaying = { title: meta.title, artist: meta.artist ?? 'Cadence' };
   }
 
   setMusicGain(level: number): void {

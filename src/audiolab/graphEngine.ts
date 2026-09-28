@@ -97,6 +97,7 @@ export class GraphEngine implements LabEngine {
   private route: string | null = null;
   private subscriptions: { remove(): void }[] = [];
   private masterLevel = 1;
+  private nowPlaying = { title: 'Cadence Audio Lab', artist: 'Cadence' };
 
   constructor(private readonly onChange: () => void = () => {}) {}
 
@@ -364,7 +365,7 @@ export class GraphEngine implements LabEngine {
       if (gen !== this.gen) return;
       this.fired = new Set([...this.fired].filter((k) => !pendingAfterSeek(this.cues, fromSeconds, new Set()).some((c) => c.key === k)));
       await this.schedule(fromSeconds);
-      await PlaybackNotificationManager.show({ title: 'Cadence Audio Lab', state: 'playing', duration: totalDuration(this.placed), elapsedTime: fromSeconds });
+      await PlaybackNotificationManager.show({ title: this.nowPlaying.title, artist: this.nowPlaying.artist, state: 'playing', duration: totalDuration(this.placed), elapsedTime: fromSeconds });
       record(this.name, 'play', { from: fromSeconds, startLatencyMs: Date.now() - t0 + LEAD * 1000 });
       this.set('PLAYING');
     } catch (e) {
@@ -457,6 +458,10 @@ export class GraphEngine implements LabEngine {
       firedCueKeys: this.fired.size,
       subscriptions: this.subscriptions.length,
     };
+  }
+
+  setNowPlaying(meta: { title: string; artist?: string }): void {
+    this.nowPlaying = { title: meta.title, artist: meta.artist ?? 'Cadence' };
   }
 
   setMusicGain(level: number): void {
