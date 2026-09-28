@@ -1,5 +1,5 @@
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Modal, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 
@@ -18,6 +18,7 @@ const fmt = (s: number | null) => (s === null ? '--:--' : `${Math.floor(s / 60)}
 type Track = Candidate;
 
 export default function Library() {
+  const router = useRouter();
   const session = useSession();
   const [owner, setOwner] = useState<PlaylistOwner | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -86,6 +87,7 @@ export default function Library() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}
       >
         <Text variant="display">Library</Text>
+        <Button testID="open-soundtracks" title="Class soundtracks" onPress={() => router.push('/soundtracks')} />
         {error ? <Text style={{ color: colors.danger }}>{error}</Text> : null}
 
         <Text variant="label" muted>
