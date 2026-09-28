@@ -289,10 +289,23 @@ export class PlayerEngine implements LabEngine {
 
   async dispose(): Promise<void> {
     this.stopLoop();
-    this.players.forEach((p) => p.remove());
-    this.cuePlayers.forEach((p) => p.remove());
+    // Stage A, build 118: loading a new class while one was playing left the
+    // old song sounding under the new one. remove() released the player
+    // without stopping it and iOS kept playing. Always pause before remove.
+    const all = [...this.players.values(), ...this.cuePlayers.values()];
+    record(this.name, 'disposed', { players: this.players.size, cuePlayers: this.cuePlayers.size, wasState: this.state });
+    for (const p of all) {
+      try {
+        p.pause();
+      } catch {
+        /* already released */
+      }
+      p.remove();
+    }
     this.players.clear();
     this.cuePlayers.clear();
+    this.preloaded.clear();
+    this.started.clear();
     this.state = 'IDLE';
   }
 }

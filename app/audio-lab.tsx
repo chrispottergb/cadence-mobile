@@ -157,7 +157,13 @@ export default function AudioLab() {
         setInfo('Need at least two playable tracks for this account.');
         return;
       }
-      await engine.current?.dispose();
+      // Fully stop the previous class before replacing it, then release it.
+      const prev = engine.current;
+      engine.current = null;
+      if (prev) {
+        await prev.stop().catch(() => undefined);
+        await prev.dispose();
+      }
       const e = engineName_ === 'graph' ? new GraphEngine(() => undefined) : new PlayerEngine(() => undefined);
       engine.current = e;
       const sc = buildScenario(s, tracks, crossfade_);
