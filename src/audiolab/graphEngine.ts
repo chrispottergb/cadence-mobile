@@ -50,6 +50,14 @@ export class GraphEngine implements LabEngine {
   private scheduledSegs = new Map<number, AudioBufferSourceNode>();
   private pumpTimer: ReturnType<typeof setInterval> | null = null;
   private pumping = false;
+  /**
+   * Playback generation. Every stop, seek or replay starts a new generation;
+   * window work started under an older one (for example a decode still in
+   * flight when the instructor seeks) must never schedule audio afterwards.
+   * Stage A, build 113: without this, each +60 s left an orphaned track
+   * playing on top of the new position until the app ran out of memory.
+   */
+  private gen = 0;
   private cueBuffers = new Map<string, AudioBuffer>();
   private placed: PlacedTrack[] = [];
   private cues: CueEvent[] = [];
@@ -121,6 +129,8 @@ export class GraphEngine implements LabEngine {
   }
 
   private stopSources() {
+    this.gen += 1;
+    this.pumping = false;
     this.stopPump();
     for (const src of [...this.live, ...this.scheduledSegs.values()]) {
       try {
@@ -168,13 +178,19 @@ export class GraphEngine implements LabEngine {
   private async pump(): Promise<void> {
     if (this.pumping || !this.ctx) return;
     this.pumping = true;
+    const gen = this.gen;
+    const stale = () => gen !== this.gen || this.ctx === null;
     try {
       const ctx = this.ctx;
       for (const p of this.placed) {
         const now = this.position();
         if (this.scheduledSegs.has(p.index) || p.endSeconds <= now || p.startSeconds > now + WINDOW_SECONDS) continue;
         const buf = await this.decode(p.trackId);
-        if (this.ctx !== ctx || this.scheduledSegs.has(p.index)) return;
+        if (stale()) {
+          record(this.name, 'stale_window_dropped', { index: p.index });
+          return;
+        }
+        if (this.ctx !== ctx || this.scheduledSegs.has(p.index)) continue;
         const nowAfter = this.position();
         if (p.endSeconds <= nowAfter) continue;
         // A segment that should already be sounding joins at the current position.
@@ -199,12 +215,14 @@ export class GraphEngine implements LabEngine {
         }
         src.start(when, p.sourceOffsetSeconds + into, p.playSeconds - into);
         src.onEnded = () => {
+          if (gen !== this.gen) return; // stopped by a seek/stop: not a natural track end
           record(this.name, 'track_end', { track: p.trackId, index: p.index, ctx: Number(ctx.currentTime.toFixed(4)), expected: Number((this.anchor + p.endSeconds).toFixed(4)) });
           this.scheduledSegs.delete(p.index);
         };
         this.scheduledSegs.set(p.index, src);
         record(this.name, 'segment_scheduled', { index: p.index, ctxWhen: Number(when.toFixed(4)), into: Number(into.toFixed(3)) });
       }
+      if (stale()) return;
       // Release buffers that no segment in the window still needs.
       const t = this.position();
       const needed = new Set(this.placed.filter((p) => p.endSeconds > t - 1 && p.startSeconds < t + WINDOW_SECONDS).map((p) => p.trackId));
@@ -217,7 +235,8 @@ export class GraphEngine implements LabEngine {
     } catch (e) {
       this.fail(e);
     } finally {
-      this.pumping = false;
+      // Only the current generation owns the flag; a stale pump must not clear a newer one's.
+      if (gen === this.gen) this.pumping = false;
     }
   }
 
@@ -259,7 +278,9 @@ export class GraphEngine implements LabEngine {
         duckTo: c.duckTo,
         master: this.masterLevel,
       });
+      const cueGen = this.gen;
       src.onEnded = () => {
+        if (cueGen !== this.gen) return; // cancelled by seek/stop, not played out
         this.fired.add(c.key);
         record(this.name, 'cue_end', { key: c.key, ctx: Number(ctx.currentTime.toFixed(4)), expectedEnd: Number((at + buf.duration).toFixed(4)) });
         this.onChange();
@@ -277,12 +298,15 @@ export class GraphEngine implements LabEngine {
     try {
       const t0 = Date.now();
       this.stopSources();
+      const gen = this.gen;
       this.pausedAt = fromSeconds;
       // Decode what is needed first while the clock is still stopped, so the
       // opening track starts on time instead of joining late.
       const first = this.placed.filter((p) => p.endSeconds > fromSeconds && p.startSeconds < fromSeconds + 1);
       await Promise.all(first.map((p) => this.decode(p.trackId)));
+      if (gen !== this.gen || !this.ctx) return; // superseded by a newer seek/stop while decoding
       await this.ctx.resume();
+      if (gen !== this.gen) return;
       this.fired = new Set([...this.fired].filter((k) => !pendingAfterSeek(this.cues, fromSeconds, new Set()).some((c) => c.key === k)));
       await this.schedule(fromSeconds);
       await PlaybackNotificationManager.show({ title: 'Cadence Audio Lab', state: 'playing', duration: totalDuration(this.placed), elapsedTime: fromSeconds });
