@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import { Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -12,13 +12,15 @@ const clock = (s: number) => formatClock(s).replace(/\.\d$/, '');
 /**
  * Always-visible bar while a class soundtrack is playing, on every screen:
  * what is playing, where in the class, and play/pause/stop. Tap the title to
- * open that soundtrack in the Builder.
+ * open the class-running view.
  */
 export function MiniPlayer() {
   const p = useClassPlayback();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  if (!isClassActive(p)) return null;
+  const pathname = usePathname();
+  // The class-running view shows the same controls, full size.
+  if (!isClassActive(p) || /^\/soundtracks\/[^/]+\/run$/.test(pathname)) return null;
   const snap = p.snapshot;
   const pos = snap?.positionSeconds ?? 0;
   const section = p.sections.find((x) => pos >= x.startSeconds && pos < x.endSeconds)?.label;
@@ -34,8 +36,8 @@ export function MiniPlayer() {
       <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, paddingVertical: space.sm, gap: space.sm }}>
         <Pressable
           style={{ flex: 1 }}
-          onPress={() => p.soundtrackId && router.push({ pathname: '/soundtracks/[id]', params: { id: p.soundtrackId } })}
-          accessibilityLabel="Open this class soundtrack"
+          onPress={() => p.soundtrackId && router.push({ pathname: '/soundtracks/[id]/run', params: { id: p.soundtrackId } })}
+          accessibilityLabel="Open the class view"
         >
           <Text numberOfLines={1} style={{ fontWeight: '700' }}>
             {p.title || 'Class soundtrack'}

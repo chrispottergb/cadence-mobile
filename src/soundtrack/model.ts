@@ -74,6 +74,12 @@ export interface ClassSoundtrack {
   tracks: SoundtrackTrack[];
   cues: SoundtrackCue[];
   sections: SoundtrackSection[];
+  /**
+   * The Guided Builder's description of the class (owned and validated by
+   * `src/soundtrack/guided.ts`). Opaque here: the timeline above stays the
+   * authoritative description of class time and playback never reads this.
+   */
+  guide?: Record<string, unknown>;
 }
 
 /** Default sound and priority for each cue type (bundled Stage A cue assets). */
@@ -399,6 +405,7 @@ export function parseSoundtrack(raw: unknown): { ok: true; value: ClassSoundtrac
     tracks: r.tracks.map((t) => normalizeTrack(t, r.durationSeconds!)),
     cues: r.cues,
     sections: r.sections.filter((x) => typeof x?.id === 'string' && x.endSeconds > x.startSeconds),
+    ...(r.guide && typeof r.guide === 'object' && !Array.isArray(r.guide) ? { guide: r.guide } : {}),
   };
   return { ok: true, value };
 }

@@ -68,7 +68,10 @@ export default function RootLayout() {
               <Stack.Screen name="generator" />
               <Stack.Screen name="audio-lab" />
               <Stack.Screen name="soundtracks/index" />
-              <Stack.Screen name="soundtracks/[id]" />
+              <Stack.Screen name="soundtracks/new" />
+              <Stack.Screen name="soundtracks/[id]/index" />
+              <Stack.Screen name="soundtracks/[id]/advanced" />
+              <Stack.Screen name="soundtracks/[id]/run" options={{ gestureEnabled: false }} />
             </Stack>
             <MiniPlayer />
           </View>
