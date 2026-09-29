@@ -106,6 +106,8 @@ beforeEach(() => {
 // ---------------------------------------------------------------- guided flow
 
 describe('Guided Builder', () => {
+  // The whole guided flow in one test. It is also the first render of the screen, so it carries the
+  // cold-start cost (~5 s on a cold cache): give it room instead of Jest's 5 s default.
   it('builds a 60 minute class from scratch: sections, durations, reorder, music, cues, preview, save, start', async () => {
     await renderSettled(<GuidedBuilder />);
     expect(data.loadSoundtrack).not.toHaveBeenCalled();
@@ -232,7 +234,7 @@ describe('Guided Builder', () => {
     // Start class opens the running view
     await act(async () => fireEvent.press(screen.getByTestId('gb-start')));
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/soundtracks/[id]/run', params: { id: 'cls-1' } });
-  });
+  }, 30_000);
 
   it('builds from a template, scaled to the class length', async () => {
     await renderSettled(<GuidedBuilder />);
