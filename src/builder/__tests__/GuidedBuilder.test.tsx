@@ -111,7 +111,8 @@ describe('Guided Builder', () => {
     expect(data.loadSoundtrack).not.toHaveBeenCalled();
 
     // 1. Class
-    expect(screen.getByTestId('gb-title')).toHaveTextContent('Your class');
+    expect(screen.getByTestId('gb-title')).toHaveTextContent('Create class soundtrack');
+    expect(screen.getByTestId('gb-continue')).toHaveTextContent('Continue to Sections');
     expect(screen.queryByText(/timeline|offset|engine/i)).toBeNull();
     fireEvent.changeText(screen.getByTestId('gb-name'), 'Tuesday Fundamentals');
     fireEvent.press(screen.getByTestId('gb-length-60'));
@@ -188,7 +189,7 @@ describe('Guided Builder', () => {
     fireEvent.press(screen.getByTestId('gb-continue'));
 
     // 5. Overview
-    expect(screen.getByTestId('gb-title')).toHaveTextContent('Overview');
+    expect(screen.getByTestId('gb-title')).toHaveTextContent('Preview');
     expect(screen.getByTestId('gb-overview-0')).toHaveTextContent(/Warm-up.*1 song · 1 cue · Music repeats.*8 min/);
     expect(screen.getByTestId('gb-overview-3')).toHaveTextContent(/Rounds.*0 songs · 3 cues · No music.*15 min/);
 
@@ -269,8 +270,8 @@ describe('Guided Builder', () => {
     plan.sections = applyTemplate(TEMPLATES[0]!, 60);
     mockDb.set('cls-9', { doc: JSON.parse(JSON.stringify(buildSoundtrack({ name: 'Saved class', musicGain: 1 }, plan))), revision: 3 });
     await renderSettled(<GuidedBuilder id="cls-9" />);
-    expect(await screen.findByText('Saved class')).toBeTruthy();
-    expect(screen.getByTestId('gb-title')).toHaveTextContent('Overview');
+    expect(await screen.findByTestId('gb-class-heading')).toHaveTextContent('60 MIN SAVED CLASS');
+    expect(screen.getByTestId('gb-title')).toHaveTextContent('Preview');
     expect(screen.getByTestId('gb-overview-3')).toHaveTextContent(/Rounds.*2 cues/);
     expect(screen.queryByTestId('gb-diverged')).toBeNull();
     // Edit a section directly from the overview

@@ -48,8 +48,8 @@ import { Chip, ChipRow, DurationBar, IntensityBar, KIND_COLORS, RoundButton, Ste
  * there as "Advanced edit". No timestamps, offsets, engines or other audio
  * internals are shown here.
  */
-const STEPS = ['Class', 'Sections', 'Music', 'Cues', 'Overview'] as const;
-const STEP_TITLES = ['Your class', 'Sections', 'Music', 'Cues', 'Overview'] as const;
+const STEPS = ['Class', 'Sections', 'Music', 'Cues', 'Preview'] as const;
+const STEP_TITLES = ['Create class soundtrack', 'Sections', 'Music', 'Cues', 'Preview'] as const;
 const OVERVIEW = 4;
 const cueSec = (a: string) => cueSeconds(a as CueId);
 
@@ -560,7 +560,7 @@ export function GuidedBuilder({ id }: { id?: string }) {
               </View>
             ) : null}
             <View style={{ flex: 2 }}>
-              <Button testID="gb-continue" title="Continue" disabled={!canContinue} onPress={() => go(step + 1)} />
+              <Button testID="gb-continue" title={`Continue to ${STEPS[step + 1]}`} disabled={!canContinue} onPress={() => go(step + 1)} />
             </View>
           </View>
         )}
@@ -822,7 +822,9 @@ function Overview({
   return (
     <View style={{ gap: space.md }}>
       <View>
-        <Text variant="title">{doc.name}</Text>
+        <Text testID="gb-class-heading" variant="title">
+          {Math.round(doc.durationSeconds / 60)} MIN {doc.name.toUpperCase()}
+        </Text>
         <Text muted>
           {dur(doc.durationSeconds)} · {rows.length} {rows.length === 1 ? 'section' : 'sections'}
         </Text>
