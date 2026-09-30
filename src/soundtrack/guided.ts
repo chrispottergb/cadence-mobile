@@ -33,12 +33,13 @@ import {
   type SoundtrackTrack,
 } from './model';
 import type { CuePriority } from '@/audiolab/timeline';
+import type { InstructorSettings } from './instructor';
 
 export const GUIDE_VERSION = 1;
 export const CLASS_LENGTHS = [30, 45, 60, 75, 90] as const;
 export const MAX_CLASS_MINUTES = MAX_CLASS_SECONDS / 60;
 /** Don't place a sliver of a song shorter than this at a section's end. */
-const MIN_PIECE_SECONDS = 3;
+export const MIN_PIECE_SECONDS = 3;
 /** Fade applied to a song that is cut at its section's end. */
 const CUT_FADE_SECONDS = 3;
 
@@ -88,6 +89,7 @@ export type CueWhen =
   | { at: 'section_end' }
   | { at: 'before_section_end'; seconds: number }
   | { at: 'every'; seconds: number }
+  | { at: 'every_round'; seconds: number }
   | { at: 'once'; seconds: number };
 export type WhenKind = CueWhen['at'];
 
@@ -95,6 +97,7 @@ export type WhenKind = CueWhen['at'];
 export type Importance = 'always' | 'normal' | 'optional';
 
 export interface CueRule {
+  speechText?: string;
   id: string;
   kind: CueKind;
   name: string;
@@ -116,6 +119,9 @@ export interface GuidedSection {
 }
 
 export interface GuidedPlan {
+  instructor?: InstructorSettings;
+  cuesEnabled?: boolean;
+  classCues?: CueRule[];
   version: number;
   minutes: number;
   sections: GuidedSection[];
@@ -177,6 +183,8 @@ export function describeWhen(w: CueWhen): string {
       return `${dur(w.seconds)} before the section ends`;
     case 'every':
       return `Every ${dur(w.seconds)}`;
+    case 'every_round':
+      return `Every ${dur(w.seconds)} during each work round`;
     case 'once':
       return `Once, ${dur(w.seconds)} in`;
   }
@@ -348,6 +356,16 @@ export function cueOffsets(rule: CueRule, spanSeconds: number, rounds?: Rounds):
     case 'every':
       if (w.seconds >= 5) for (let t = w.seconds; within(t); t += w.seconds) out.push(t);
       break;
+    case 'every_round':
+      if (rounds && w.seconds >= 5) {
+        for (let k = 0; k < rounds.count; k++) {
+          for (let t = w.seconds; t < rounds.workSeconds; t += w.seconds) {
+            const at = k * roundPeriod(rounds) + t;
+            if (within(at)) out.push(at);
+          }
+        }
+      }
+      break;
     case 'once':
       if (within(w.seconds)) out.push(w.seconds);
       break;
@@ -368,6 +386,7 @@ export function compileCue(rule: CueRule, sectionId: string, start: number, span
     priority: IMPORTANCE[rule.importance].priority,
     duckTo: CUE_TYPES[type].duckTo,
     label: name,
+    ...(rule.speechText !== undefined ? { speechText: rule.speechText } : {}),
   };
   if (times.length > 1) {
     cue.repeatEverySeconds = round3(times[1]! - times[0]!);
@@ -409,10 +428,17 @@ export function buildSoundtrack(base: Pick<ClassSoundtrack, 'name' | 'musicGain'
     });
     for (const rule of s.cues) {
       const c = compileCue(rule, s.id, start, span, s.rounds);
-      if (c) cues.push(c);
+      if (c && rule.when.at === 'every_round') {
+        const { repeatEverySeconds: _every, repeatUntilSeconds: _until, ...once } = c;
+        cueOffsets(rule, span, s.rounds).forEach((t, i) => cues.push({ ...once, id: `${c.id}~${i}`, timeSeconds: round3(start + t) }));
+      } else if (c) cues.push(c);
     }
   }
-  const doc: ClassSoundtrack = { ...shell, musicGain: base.musicGain, sections, tracks, cues };
+  for (const rule of plan.classCues ?? []) {
+    const c = compileCue(rule, 'class', 0, classSeconds);
+    if (c) cues.push(c);
+  }
+  const doc: ClassSoundtrack = { ...shell, musicGain: base.musicGain, sections, tracks, cues, cuesEnabled: plan.cuesEnabled ?? true };
   const guide: GuidedPlan = { ...plan, version: GUIDE_VERSION, fingerprint: fingerprint(doc) };
   return { ...doc, guide: guide as unknown as Record<string, unknown> };
 }
@@ -463,6 +489,7 @@ function readWhen(v: unknown): CueWhen | null {
     case 'before_round_end':
     case 'before_section_end':
     case 'every':
+    case 'every_round':
     case 'once':
       return isNum(v.seconds) && v.seconds >= 0 ? { at: v.at, seconds: v.seconds } : null;
     default:
@@ -475,7 +502,8 @@ function readRule(v: unknown): CueRule | null {
   if (typeof v.sound !== 'string' || !(v.sound in CUE_SOUNDS) || typeof v.importance !== 'string' || !(v.importance in IMPORTANCE)) return null;
   const when = readWhen(v.when);
   if (!when) return null;
-  return { id: v.id, kind: v.kind as CueKind, name: typeof v.name === 'string' ? v.name : '', sound: v.sound as CueSound, when, importance: v.importance as Importance };
+  return { id: v.id, kind: v.kind as CueKind, name: typeof v.name === 'string' ? v.name : '', sound: v.sound as CueSound, when, importance: v.importance as Importance,
+    ...(typeof v.speechText === 'string' && v.speechText.trim() ? { speechText: v.speechText.slice(0, 240) } : {}) };
 }
 
 function readSection(v: unknown): GuidedSection | null {
@@ -519,7 +547,11 @@ export function readGuide(doc: Pick<ClassSoundtrack, 'guide'>): GuidedPlan | nul
     if (!s) return null;
     sections.push(s);
   }
-  return { version: GUIDE_VERSION, minutes: g.minutes, sections, ...(typeof g.fingerprint === 'string' ? { fingerprint: g.fingerprint } : {}) };
+  return { version: GUIDE_VERSION, minutes: g.minutes, sections,
+    cuesEnabled: g.cuesEnabled !== false,
+    classCues: Array.isArray(g.classCues) ? g.classCues.map(readRule).filter((r): r is CueRule => r !== null) : [],
+    ...(isObj(g.instructor) ? { instructor: g.instructor as unknown as InstructorSettings } : {}),
+    ...(typeof g.fingerprint === 'string' ? { fingerprint: g.fingerprint } : {}) };
 }
 
 /** A best-effort plan for a class built on the timeline (sections become custom sections, their music is kept). */

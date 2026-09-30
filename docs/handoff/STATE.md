@@ -1,4 +1,14 @@
-# Cadence — handoff state (2026-09-28)
+# Cadence — handoff state (2026-09-30)
+
+## Current local update
+
+The owner explicitly authorized Phase 4 application-code work after the earlier
+Build 123 hold. The instructor setup is implemented locally on
+`feat/instructor-class-builder`, based on `f122b5a`. See
+[`phase-4-implementation.md`](phase-4-implementation.md) for scope and validation.
+Lint, typecheck and 106 tests pass; the iOS JavaScript bundle exports. These
+changes have not been included in a native/TestFlight build, and have
+not been tested on a phone. The prior checkpoint below is historical context.
 
 Read this first in a new session, then `guided-builder-brief.md`.
 

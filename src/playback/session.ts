@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react';
 
 import { loadCueAssets, type PlayableTrack, resolveTrack } from '@/audiolab/assets';
 import type { PlaybackPlan, SoundtrackSection } from '@/soundtrack/model';
+import { speechText } from '@/soundtrack/speech';
 
 import { createEngine } from './create';
 import type { EngineKind, EngineSnapshot, PlaybackEngine } from './engine';
@@ -95,17 +96,20 @@ export async function startClass(o: StartOptions): Promise<void> {
   let e: PlaybackEngine | null = null;
   try {
     if (!o.plan.placed.length) throw new Error('Add some music first.');
+    if (o.engineKind !== 'media-player' && o.plan.cues.some(c => speechText(c.assetId) !== null)) throw new Error('Spoken instructions currently require the class media player.');
     const byId = new Map(o.library.map((t) => [t.trackId, t]));
     const loaded = [];
     for (const tid of new Set(o.plan.placed.map((p) => p.trackId))) {
-      const t = byId.get(tid);
-      if (!t) throw new Error('A track in this soundtrack is no longer available to you.');
+      // Saved classes can outlive the recent-library window. Authorization still
+      // happens in resolveTrack through the signed playback endpoint.
+      const seg = o.plan.placed.find(p => p.trackId === tid)!;
+      const t = byId.get(tid) ?? { trackId: tid, title: 'Class music', durationSeconds: seg.sourceOffsetSeconds + seg.playSeconds, jobId: '', label: '' };
       loaded.push(await resolveTrack(t, 'download'));
       if (myRun !== run) return;
     }
     e = createEngine(o.engineKind);
     e.setNowPlaying({ title: o.title, artist: 'Cadence class' });
-    await e.load(o.plan.placed, loaded, o.plan.cues, await loadCueAssets());
+    await e.load(o.plan.placed, loaded, o.plan.cues, await loadCueAssets(), o.plan.totalSeconds);
     if (myRun !== run) {
       await e.dispose();
       return;

@@ -53,24 +53,26 @@ const STEP_TITLES = ['Create class soundtrack', 'Sections', 'Music', 'Cues', 'Pr
 const OVERVIEW = 4;
 const cueSec = (a: string) => cueSeconds(a as CueId);
 
-export function GuidedBuilder({ id }: { id?: string }) {
+export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrary = [], onSaved }: { id?: string; initialPlan?: GuidedPlan; initialName?: string; initialLibrary?: PlayableTrack[]; onSaved?: () => Promise<void> }) {
   const router = useRouter();
   const session = useSession();
   const cls = useClassPlayback();
   const [classId, setClassId] = useState<string | null>(id ?? null);
   const [loaded, setLoaded] = useState<ClassSoundtrack | null>(null);
   const [revision, setRevision] = useState(0);
-  const [name, setName] = useState('');
-  const [plan, setPlan] = useState<GuidedPlan>(() => newPlan(60));
+  const [name, setName] = useState(initialName);
+  const [plan, setPlan] = useState<GuidedPlan>(() => initialPlan ?? newPlan(60));
   const [diverged, setDiverged] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [step, setStep] = useState(id ? OVERVIEW : 0);
-  const [reached, setReached] = useState(id ? OVERVIEW : 0);
+  const [dirty, setDirty] = useState(!!initialPlan);
+  const [step, setStep] = useState(id || initialPlan ? OVERVIEW : 0);
+  const [reached, setReached] = useState(id || initialPlan ? OVERVIEW : 0);
   const [ready, setReady] = useState(!id);
   const [status, setStatus] = useState<string | null>(id ? 'Loading...' : null);
   const [busy, setBusy] = useState(false);
   const [gymId, setGymId] = useState<string | null>(null);
-  const [library, setLibrary] = useState<PlayableTrack[]>([]);
+  const [library, setLibrary] = useState<PlayableTrack[]>(initialLibrary);
+  const initialLibraryRef = useRef(initialLibrary);
+  const saving = useRef(false);
   const [libLoading, setLibLoading] = useState(true);
   const [customLength, setCustomLength] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -105,7 +107,7 @@ export function GuidedBuilder({ id }: { id?: string }) {
     setLibLoading(true);
     // Real gym music only (demo tracks are an Audio Lab tool).
     const t = await listPlayable();
-    setLibrary(t.filter((x) => x.demo === undefined));
+    setLibrary([...new Map([...initialLibraryRef.current, ...t.filter((x) => x.demo === undefined)].map(x => [x.trackId, x])).values()]);
     setLibLoading(false);
   }, []);
 
@@ -127,6 +129,7 @@ export function GuidedBuilder({ id }: { id?: string }) {
   }, [name, plan, diverged, loaded]);
   const spans = useMemo(() => sectionSpans(plan), [plan]);
   const spanOf = (sid: string) => {
+    if (sid === 'class') return plan.minutes * 60;
     const x = spans.find((s) => s.section.id === sid);
     return x ? x.end - x.start : 0;
   };
@@ -138,7 +141,9 @@ export function GuidedBuilder({ id }: { id?: string }) {
     setPlan((p) => f(p));
     setDirty(true);
   };
-  const changeSection = (sid: string, f: (s: GuidedSection) => GuidedSection) => change((p) => ({ ...p, sections: p.sections.map((s) => (s.id === sid ? f(s) : s)) }));
+  const changeSection = (sid: string, f: (s: GuidedSection) => GuidedSection) => change((p) => sid === 'class'
+    ? { ...p, classCues: f({ ...newSection('custom', p.minutes), id: 'class', label: 'Whole class', cues: p.classCues ?? [] }).cues }
+    : { ...p, sections: p.sections.map((s) => (s.id === sid ? f(s) : s)) });
   const setMinutes = (m: number) => change((p) => ({ ...p, minutes: Math.max(5, Math.min(MAX_CLASS_MINUTES, Math.round(m))) }));
   const go = (i: number) => {
     setStep(i);
@@ -147,7 +152,10 @@ export function GuidedBuilder({ id }: { id?: string }) {
 
   /** Save (creating the class the first time). Returns its id, or null if it could not be saved. */
   const persist = async (): Promise<string | null> => {
+    if (saving.current) return null;
+    if (doc.cues.some(c => c.speechText !== undefined && !c.speechText.trim())) { setStatus('Enter text for each spoken instruction, or choose a cue sound.'); return null; }
     if (classId && !dirty) return classId;
+    saving.current = true;
     setBusy(true);
     try {
       if (!classId) {
@@ -166,6 +174,7 @@ export function GuidedBuilder({ id }: { id?: string }) {
         setLoaded(doc);
         setDirty(false);
         setStatus('Saved');
+        await onSaved?.().catch(() => setStatus('Saved. The local draft could not be cleared.'));
         return r.id;
       }
       const r = await saveSoundtrack(classId, revision, doc);
@@ -177,8 +186,13 @@ export function GuidedBuilder({ id }: { id?: string }) {
       setLoaded(doc);
       setDirty(false);
       setStatus('Saved');
+      await onSaved?.().catch(() => setStatus('Saved. The local draft could not be cleared.'));
       return classId;
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : 'Could not save class. Try again.');
+      return null;
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   };
@@ -191,14 +205,14 @@ export function GuidedBuilder({ id }: { id?: string }) {
       await stopClass();
       return;
     }
-    const cid = classId ?? (await persist());
+    const cid = await persist();
     if (cid) void play(cid);
   };
 
   const startRunning = async () => {
     const cid = await persist();
     if (!cid) return;
-    if (!(cls.soundtrackId === cid && isClassActive(cls))) void play(cid);
+    if (dirty || !(cls.soundtrackId === cid && isClassActive(cls))) void play(cid);
     router.push({ pathname: '/soundtracks/[id]/run', params: { id: cid } });
   };
 
@@ -261,7 +275,7 @@ export function GuidedBuilder({ id }: { id?: string }) {
 
   const pickingSection = plan.sections.find((s) => s.id === picking) ?? null;
   const addingSection = plan.sections.find((s) => s.id === addingCue) ?? null;
-  const editSection = plan.sections.find((s) => s.id === editingCue?.sectionId) ?? null;
+  const editSection = editingCue?.sectionId === 'class' ? { ...newSection('custom', plan.minutes), id: 'class', label: 'Whole class', cues: plan.classCues ?? [] } : plan.sections.find((s) => s.id === editingCue?.sectionId) ?? null;
   const editRule = editSection?.cues.find((r) => r.id === editingCue?.ruleId) ?? null;
   const canContinue = step === 0 ? plan.minutes >= 5 : step === 1 ? plan.sections.length > 0 && total === plan.minutes : true;
 
@@ -303,6 +317,11 @@ export function GuidedBuilder({ id }: { id?: string }) {
         <Text testID="gb-title" variant="display">
           {STEP_TITLES[step]}
         </Text>
+        {step === OVERVIEW ? <>
+          <ChipRow><Chip label="With cues" selected={doc.cuesEnabled !== false} onPress={() => { change(p => ({ ...p, cuesEnabled: true })); if (diverged) setLoaded(d => d ? { ...d, cuesEnabled: true } : d); }} /><Chip label="Music only" selected={doc.cuesEnabled === false} onPress={() => { change(p => ({ ...p, cuesEnabled: false })); if (diverged) setLoaded(d => d ? { ...d, cuesEnabled: false } : d); }} /></ChipRow>
+          {!diverged && plan.classCues?.length ? <Card style={{ gap: space.sm }}><Text variant="title">Whole-class cues</Text>{plan.classCues.map(c => <View key={c.id}><Text>{c.speechText ?? c.name} · {describeWhen(c.when)}</Text><Button title={`Edit ${c.name}`} variant="ghost" onPress={() => setEditingCue({ sectionId: 'class', ruleId: c.id })} /></View>)}</Card> : null}
+          {classId ? <Button title="Duplicate class" variant="secondary" disabled={busy} onPress={() => { setClassId(null); setName(`${name} copy`); setRevision(0); setDirty(true); setStatus('New copy. Save when ready; the original is unchanged.'); }} /> : null}
+        </> : null}
 
         {step === 0 ? (
           <>
@@ -729,7 +748,7 @@ function RoundsEditor({ index, section, span, onChange }: { index: number; secti
         onPress={() =>
           onChange((x) => {
             const { rounds: _drop, ...rest } = x;
-            return { ...rest, cues: x.cues.filter((c) => !CUE_KINDS[c.kind].needsRounds && !['round_start', 'round_end', 'rest_start', 'before_round_end'].includes(c.when.at)) };
+            return { ...rest, cues: x.cues.filter((c) => !CUE_KINDS[c.kind].needsRounds && !['round_start', 'round_end', 'rest_start', 'before_round_end', 'every_round'].includes(c.when.at)) };
           })
         }
       />
@@ -794,6 +813,7 @@ function Overview({
   onEdit: (step: number) => void;
 }) {
   const unplanned = plan.minutes - totalMinutes(plan);
+  const playback = toPlan(doc, cueSec);
   const rows = diverged
     ? [...doc.sections]
         .sort((a, b) => a.startSeconds - b.startSeconds)
@@ -859,6 +879,7 @@ function Overview({
       ))}
       {!diverged && unplanned > 0 ? <Text muted>{unplanned} min at the end have no section.</Text> : null}
       {!rows.length ? <Text muted>No sections yet.</Text> : null}
+      {playback.droppedCueKeys.length || playback.deferredCueKeys.length ? <Text muted>{playback.droppedCueKeys.length} overlapping cues will be skipped; {playback.deferredCueKeys.length} will play slightly later. Adjust cue timing to hear every instruction.</Text> : null}
       {message ? <Text style={{ color: colors.danger }}>{message}</Text> : null}
 
       <Button testID="gb-start" title={active ? 'Open class view' : 'START CLASS'} onPress={onStart} loading={busy} />

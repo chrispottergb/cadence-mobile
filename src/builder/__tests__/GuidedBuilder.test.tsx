@@ -3,6 +3,8 @@ import type React from 'react';
 import { Alert } from 'react-native';
 
 import { GuidedBuilder } from '@/builder/GuidedBuilder';
+import { InstructorBuilder } from '@/builder/InstructorBuilder';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RunningClass } from '@/builder/RunningClass';
 import { MiniPlayer } from '@/playback/MiniPlayer';
 import { buildSoundtrack, guidedState, newPlan } from '@/soundtrack/guided';
@@ -25,7 +27,7 @@ jest.mock('expo-router', () => {
 jest.mock('expo-keep-awake', () => ({ activateKeepAwakeAsync: jest.fn(async () => undefined), deactivateKeepAwake: jest.fn(async () => undefined) }));
 jest.mock('@/auth/session', () => ({ useSession: () => ({ ready: true, session: { user: { id: 'user-1' } } }) }));
 jest.mock('@/data/gyms', () => ({ listMyGyms: jest.fn(async () => ({ gyms: [{ id: 'gym-1' }], error: null })) }));
-jest.mock('@/music/client', () => ({ getPlaybackUrl: jest.fn(async () => ({ ok: true, data: { url: 'https://signed/x', expiresInSeconds: 60 } })) }));
+jest.mock('@/music/client', () => ({ getPlaybackUrl: jest.fn(async () => ({ ok: true, data: { url: 'https://signed/x', expiresInSeconds: 60 } })), fetchCapabilities: jest.fn(async () => ({ ok: false, error: 'network' })) }));
 jest.mock('expo-audio', () => ({
   useAudioPlayer: () => ({ replace: jest.fn(), play: jest.fn(), pause: jest.fn() }),
   useAudioPlayerStatus: () => ({ playing: false }),
@@ -98,9 +100,67 @@ const stored = (id: string) => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSeq = 0;
   mockDb.clear();
   mockPathname = '/';
   Object.assign(mockPlayback, { soundtrackId: null, snapshot: null, preparing: false, message: null, sections: [] });
+});
+
+describe('Instructor setup', () => {
+  beforeEach(async () => { await AsyncStorage.clear(); });
+
+  it('builds, saves and starts a real 60-minute plan from instructor answers', async () => {
+    await renderSettled(<InstructorBuilder />);
+    fireEvent.changeText(screen.getByTestId('ic-name'), 'Evening practice');
+    fireEvent.press(screen.getByTestId('ic-next'));
+    fireEvent.press(screen.getByText('Timed rounds'));
+    fireEvent.changeText(screen.getByLabelText('Number of rounds'), '8');
+    fireEvent.press(screen.getByTestId('ic-next'));
+    fireEvent.press(screen.getByText('Add a cue or spoken instruction'));
+    fireEvent.changeText(screen.getByLabelText('Spoken instruction 1'), 'Keep your breathing steady');
+    fireEvent.press(screen.getByText('During each work round'));
+    fireEvent.press(screen.getByTestId('ic-next'));
+    fireEvent.press(screen.getByText(/Pad Work ·/));
+    fireEvent.press(screen.getByText('Allow repeats'));
+    await act(async () => { fireEvent.press(screen.getByTestId('ic-build')); });
+    expect(screen.getByTestId('gb-class-heading')).toHaveTextContent('60 MIN EVENING PRACTICE');
+    fireEvent.press(screen.getByText('Music only'));
+    await act(async () => { fireEvent.press(screen.getByTestId('gb-save')); });
+    const id = data.createSoundtrack.mock.results.at(-1)!.value;
+    const result = await id;
+    const doc = stored(result.id);
+    expect(doc.cuesEnabled).toBe(false);
+    expect(doc.cues.some(c => c.speechText === 'Keep your breathing steady')).toBe(true);
+    expect(doc.durationSeconds).toBe(3600);
+    expect(doc.tracks.length).toBeGreaterThan(10);
+    expect(await AsyncStorage.getItem('instructor-class:v1:user-1:gym-1')).toBeNull();
+    fireEvent.press(screen.getByText('With cues'));
+    await act(async () => { fireEvent.press(screen.getByTestId('gb-start')); });
+    expect(session.startClass).toHaveBeenCalledWith(expect.objectContaining({ title: 'Evening practice', plan: expect.objectContaining({ totalSeconds: 3600, cues: expect.any(Array) }) }));
+    expect(stored(result.id).cuesEnabled).toBe(true);
+  }, 30000);
+
+  it('restores a draft and duplicates without changing the saved original', async () => {
+    const first = await renderSettled(<InstructorBuilder />);
+    await act(async () => { fireEvent.changeText(screen.getByTestId('ic-name'), 'Reusable practice'); });
+    first.unmount();
+    await renderSettled(<InstructorBuilder />);
+    expect(screen.getByTestId('ic-name')).toHaveProp('value', 'Reusable practice');
+    fireEvent.press(screen.getByTestId('ic-next'));
+    fireEvent.press(screen.getByTestId('ic-next'));
+    fireEvent.press(screen.getByTestId('ic-next'));
+    fireEvent.press(screen.getByText(/Long Run ·/));
+    fireEvent.press(screen.getByText('Allow repeats'));
+    await act(async () => { fireEvent.press(screen.getByTestId('ic-build')); });
+    await act(async () => { fireEvent.press(screen.getByTestId('gb-save')); });
+    const original = [...mockDb.keys()][0]!;
+    const originalDoc = JSON.stringify(stored(original));
+    fireEvent.press(screen.getByText('Duplicate class'));
+    await act(async () => { fireEvent.press(screen.getByTestId('gb-save')); });
+    expect(mockDb.size).toBe(2);
+    expect(JSON.stringify(stored(original))).toBe(originalDoc);
+    expect([...mockDb.keys()].filter(id => id !== original).map(id => stored(id).name)).toEqual(['Reusable practice copy']);
+  });
 });
 
 // ---------------------------------------------------------------- guided flow

@@ -24,7 +24,7 @@ import { Chip, ChipRow, Sheet, Stepper } from './parts';
 function whenOptions(section: GuidedSection): WhenKind[] {
   const r = section.rounds;
   return [
-    ...(r ? (['round_start', 'round_end', 'before_round_end'] as WhenKind[]) : []),
+    ...(r ? (['round_start', 'round_end', 'before_round_end', 'every_round'] as WhenKind[]) : []),
     ...(r && r.restSeconds > 0 ? (['rest_start'] as WhenKind[]) : []),
     'every',
     'once',
@@ -43,6 +43,7 @@ const WHEN_LABELS: Record<WhenKind, string> = {
   section_end: 'Section end',
   before_section_end: 'Before section ends',
   every: 'Every...',
+  every_round: 'Every... during work rounds',
   once: 'Once, at...',
 };
 
@@ -54,6 +55,7 @@ function whenFor(at: WhenKind, prev: CueWhen): CueWhen {
     case 'before_round_end':
     case 'before_section_end':
       return { at, seconds: seconds ?? 30 };
+    case 'every_round':
     case 'every':
       return { at, seconds: seconds ?? 120 };
     case 'once':
@@ -68,6 +70,7 @@ const STEP: Partial<Record<WhenKind, { step: number; min: number }>> = {
   before_round_end: { step: 5, min: 5 },
   before_section_end: { step: 5, min: 5 },
   every: { step: 30, min: 30 },
+  every_round: { step: 15, min: 15 },
   once: { step: 30, min: 0 },
 };
 
@@ -124,7 +127,7 @@ export function CueEditSheet({
             <Button testID="cue-remove" title="Remove" variant="secondary" onPress={onRemove} />
           </View>
           <View style={{ flex: 2 }}>
-            <Button testID="cue-done" title="Done" onPress={onClose} />
+            <Button testID="cue-done" title="Done" disabled={rule.speechText !== undefined && !rule.speechText.trim()} onPress={onClose} />
           </View>
         </View>
       }
@@ -137,6 +140,7 @@ export function CueEditSheet({
         Name
       </Text>
       <Field testID="cue-name" value={rule.name} onChangeText={(v) => set({ name: v })} placeholder={CUE_KINDS[rule.kind].label === 'Custom' ? 'e.g. Water break' : CUE_KINDS[rule.kind].label} maxLength={40} />
+      {rule.speechText !== undefined ? <Field accessibilityLabel="Spoken instruction" value={rule.speechText} onChangeText={(speechText) => set({ speechText })} maxLength={240} multiline /> : null}
 
       <Text variant="label" muted>
         When
@@ -160,8 +164,9 @@ export function CueEditSheet({
         Sound
       </Text>
       <ChipRow>
+        <Chip label="Speak text" selected={rule.speechText !== undefined} onPress={() => set({ speechText: rule.speechText ?? rule.name })} />
         {(Object.keys(CUE_SOUNDS) as CueSound[]).map((k) => (
-          <Chip key={k} testID={`cue-sound-${k}`} label={CUE_SOUNDS[k].label} selected={rule.sound === k} onPress={() => set({ sound: k })} />
+          <Chip key={k} testID={`cue-sound-${k}`} label={CUE_SOUNDS[k].label} selected={rule.speechText === undefined && rule.sound === k} onPress={() => set({ sound: k, speechText: undefined })} />
         ))}
       </ChipRow>
 

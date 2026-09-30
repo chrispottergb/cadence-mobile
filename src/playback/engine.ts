@@ -41,7 +41,7 @@ export interface EngineSnapshot {
 export interface PlaybackEngine {
   readonly name: string;
   /** Prepare a plan. Resolves in READY (or ERROR). */
-  load(placed: PlacedTrack[], tracks: LoadedTrack[], cues: CueEvent[], assets: CueAsset[]): Promise<void>;
+  load(placed: PlacedTrack[], tracks: LoadedTrack[], cues: CueEvent[], assets: CueAsset[], durationSeconds?: number): Promise<void>;
   /** Start (or restart) from a class time. Cues before it are skipped. */
   play(fromSeconds?: number): Promise<void>;
   pause(): Promise<void>;

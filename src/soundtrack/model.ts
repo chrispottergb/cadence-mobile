@@ -14,6 +14,7 @@
  * generator. Nothing is stretched or looped; trims are explicit.
  */
 import { type CueEvent, type CuePriority, expandCues, type PlacedTrack, resolveCollisions } from '@/audiolab/timeline';
+import { speechAsset, speechDuration } from './speech';
 
 export const SCHEMA_VERSION = 1;
 export const MIN_TRACK_SECONDS = 1;
@@ -45,6 +46,7 @@ export interface SoundtrackTrack {
 export type CueType = 'round_start' | 'round_end' | 'stop' | 'switch' | 'countdown' | 'coaching' | 'motivation';
 
 export interface SoundtrackCue {
+  speechText?: string;
   id: string;
   timeSeconds: number;
   type: CueType;
@@ -66,6 +68,7 @@ export interface SoundtrackSection {
 }
 
 export interface ClassSoundtrack {
+  cuesEnabled?: boolean;
   schemaVersion: number;
   name: string;
   durationSeconds: number;
@@ -346,13 +349,13 @@ export function toPlan(s: ClassSoundtrack, cueSeconds: (assetId: string) => numb
     crossfadeInSeconds: t.fadeInSeconds,
     crossfadeOutSeconds: t.fadeOutSeconds,
   }));
-  const specs = sortedCues(s).map((c) => {
+  const specs = (s.cuesEnabled === false ? [] : sortedCues(s)).map((c) => {
     const d = CUE_TYPES[c.type];
     return {
       id: c.id,
       timeSeconds: c.timeSeconds,
-      assetId: d.assetId,
-      assetDurationSeconds: cueSeconds(d.assetId),
+      assetId: c.speechText !== undefined ? speechAsset(c.speechText) : d.assetId,
+      assetDurationSeconds: c.speechText !== undefined ? speechDuration(c.speechText) : cueSeconds(d.assetId),
       priority: c.priority,
       duckTo: c.duckTo,
       ...(c.repeatEverySeconds ? { repeatEverySeconds: c.repeatEverySeconds, repeatUntilSeconds: c.repeatUntilSeconds ?? s.durationSeconds } : {}),
@@ -396,10 +399,12 @@ export function parseSoundtrack(raw: unknown): { ok: true; value: ClassSoundtrac
   }
   for (const c of r.cues) {
     if (typeof c?.id !== 'string' || !(c.type in CUE_TYPES) || typeof c.timeSeconds !== 'number') return { ok: false, error: 'invalid cue' };
+      if (c.speechText !== undefined && (typeof c.speechText !== 'string' || !c.speechText.trim() || c.speechText.length > 240)) return { ok: false, error: 'invalid speech' };
   }
   const value: ClassSoundtrack = {
     schemaVersion: SCHEMA_VERSION,
     name: r.name,
+      ...(r.cuesEnabled !== undefined ? { cuesEnabled: r.cuesEnabled !== false } : {}),
     durationSeconds: r.durationSeconds,
     musicGain: typeof r.musicGain === 'number' ? clamp(r.musicGain, 0, 1) : 1,
     tracks: r.tracks.map((t) => normalizeTrack(t, r.durationSeconds!)),

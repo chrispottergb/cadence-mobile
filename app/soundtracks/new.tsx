@@ -1,6 +1,6 @@
-import { GuidedBuilder } from '@/builder/GuidedBuilder';
+import { InstructorBuilder } from '@/builder/InstructorBuilder';
 
 /** Build a new class with the Guided Builder. */
 export default function NewClass() {
-  return <GuidedBuilder />;
+  return <InstructorBuilder />;
 }

@@ -1,4 +1,6 @@
 import { type AudioPlayer, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import * as Speech from 'expo-speech';
+import { speechText } from '@/soundtrack/speech';
 
 import type { CueAsset, EngineSnapshot, EngineState, LabEngine, LoadedTrack } from './engine';
 import { record } from './metrics';
@@ -42,6 +44,11 @@ export class PlayerEngine implements LabEngine {
   /** Class time = baseClass + (player.currentTime - baseSource) of the reference segment. */
   private ref: { index: number; baseClass: number; baseSource: number } | null = null;
   private pausedAt = 0;
+  private quietSince = 0;
+  private classDuration = 0;
+  private cueEpoch = 0;
+  private speaking = false;
+  private cueRelease: ReturnType<typeof setTimeout> | null = null;
   private duck = { level: 1, target: 1, t0: 0, from: 1, ms: 0 };
   private started = new Set<number>();
   private preloaded = new Set<number>();
@@ -80,12 +87,13 @@ export class PlayerEngine implements LabEngine {
     this.onChange();
   }
 
-  async load(placed: PlacedTrack[], tracks: LoadedTrack[], cues: CueEvent[], assets: CueAsset[]): Promise<void> {
+  async load(placed: PlacedTrack[], tracks: LoadedTrack[], cues: CueEvent[], assets: CueAsset[], durationSeconds = totalDuration(placed)): Promise<void> {
     this.set('LOADING');
     const t0 = Date.now();
     try {
       await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' });
       this.placed = placed;
+      this.classDuration = Math.max(durationSeconds, totalDuration(placed));
       this.cues = cues;
       for (const t of tracks) this.sources.set(t.trackId, t.source);
       for (const a of assets) this.cuePlayers.set(a.assetId, createAudioPlayer({ uri: a.source }));
@@ -113,7 +121,8 @@ export class PlayerEngine implements LabEngine {
   }
 
   private position(): number {
-    if (this.state !== 'PLAYING' || !this.ref) return this.pausedAt;
+    if (this.state !== 'PLAYING') return this.pausedAt;
+    if (!this.ref) return Math.min(this.classDuration, this.pausedAt + (Date.now() - this.quietSince) / 1000);
     const p = this.players.get(this.ref.index);
     if (!p) return this.pausedAt;
     if (this.seekPendingSince !== null) {
@@ -179,6 +188,7 @@ export class PlayerEngine implements LabEngine {
       else if (now < refSeg.endSeconds - 0.3 && Date.now() - this.lastProgress.at > STALL_MS) {
         this.pausedAt = now;
         this.stopLoop();
+        void this.stopCues();
         for (const i of this.started) this.players.get(i)?.pause();
         record(this.name, 'interruption', { type: 'began', source: 'no_progress', stalledMs: Date.now() - this.lastProgress.at, playingFlag: refPlayer.playing, position: Number(now.toFixed(3)) });
         this.set('INTERRUPTED');
@@ -202,6 +212,7 @@ export class PlayerEngine implements LabEngine {
         done?.pause();
         done?.remove();
         this.players.delete(i);
+        if (this.ref?.index === i) { this.ref = null; this.pausedAt = now; this.quietSince = Date.now(); }
         this.started.delete(i);
         record(this.name, 'track_end', { index: i, lateMs: Math.round((now - seg.endSeconds) * 1000) });
       }
@@ -226,21 +237,50 @@ export class PlayerEngine implements LabEngine {
       if (c.timeSeconds > now + (DUCK_ATTACK_MS / 1000)) break;
       if (c.timeSeconds - now <= DUCK_ATTACK_MS / 1000 && this.duck.target === 1) this.rampDuck(c.duckTo, DUCK_ATTACK_MS);
       if (now + 1e-3 >= c.timeSeconds) {
-        const cp = this.cuePlayers.get(c.assetId);
-        if (cp) {
-          void cp.seekTo(0);
-          cp.play();
-        }
+        void this.playCue(c);
         this.fired.add(c.key);
         record(this.name, 'cue_fired', { key: c.key, expected: c.timeSeconds, actual: Number(now.toFixed(4)), lateMs: Math.round((now - c.timeSeconds) * 1000) });
-        setTimeout(() => this.rampDuck(1, DUCK_RELEASE_MS), c.durationSeconds * 1000);
       }
     }
-    if (now >= totalDuration(this.placed) && this.placed.length) {
+    if (now >= this.classDuration && this.classDuration > 0) {
+      this.pausedAt = this.classDuration;
       this.stopLoop();
       this.set('COMPLETED');
     }
   };
+
+  private async stopCues() {
+    this.cueEpoch++;
+    if (this.cueRelease) clearTimeout(this.cueRelease);
+    this.cueRelease = null;
+    this.cuePlayers.forEach(p => p.pause());
+    if (this.speaking) { this.speaking = false; await Speech.stop(); }
+  }
+
+  private async playCue(c: CueEvent) {
+    const stopping = this.stopCues();
+    const epoch = this.cueEpoch;
+    try {
+      await stopping;
+      if (epoch !== this.cueEpoch || (this.state !== 'PLAYING' && this.state !== 'COMPLETED')) return;
+      this.rampDuck(c.duckTo, 0);
+      this.duck.level = c.duckTo;
+      const release = () => { if (epoch === this.cueEpoch) { this.speaking = false; this.rampDuck(1, DUCK_RELEASE_MS); } };
+      const text = speechText(c.assetId);
+      if (text !== null) {
+        this.speaking = true;
+        Speech.speak(text, { useApplicationAudioSession: true, onDone: release, onStopped: release,
+          onError: error => { if (epoch === this.cueEpoch) { release(); void this.pause().then(() => this.fail(error)); } } });
+      } else {
+        const cp = this.cuePlayers.get(c.assetId);
+        if (!cp) throw new Error('This cue sound is unavailable.');
+        await cp.seekTo(0);
+        if (epoch !== this.cueEpoch) return;
+        cp.play();
+        this.cueRelease = setTimeout(release, c.durationSeconds * 1000);
+      }
+    } catch (e) { if (epoch === this.cueEpoch) { await this.pause(); this.fail(e); } }
+  }
 
   private rampDuck(target: number, ms: number) {
     record(this.name, 'duck', { target, rampMs: ms, from: Number(this.duck.level.toFixed(3)), position: Number(this.position().toFixed(3)) });
@@ -259,6 +299,9 @@ export class PlayerEngine implements LabEngine {
 
   async play(fromSeconds = 0): Promise<void> {
     if (this.state === 'LOADING' || this.state === 'ERROR') return;
+    await this.stopCues();
+    this.pausedAt = fromSeconds;
+    this.quietSince = Date.now();
     const t0 = Date.now();
     // Start clean: free every player (including preloaded ones a seek skipped past).
     this.players.forEach((p) => {
@@ -286,6 +329,7 @@ export class PlayerEngine implements LabEngine {
     this.stopLoop();
     for (const i of this.started) this.players.get(i)?.pause();
     this.set('PAUSED');
+    await this.stopCues();
   }
 
   async resume(): Promise<void> {
@@ -298,7 +342,8 @@ export class PlayerEngine implements LabEngine {
 
   async seek(seconds: number): Promise<void> {
     const wasPlaying = this.state === 'PLAYING';
-    this.pausedAt = Math.max(0, Math.min(seconds, totalDuration(this.placed)));
+    this.pausedAt = Math.max(0, Math.min(seconds, this.classDuration));
+    await this.stopCues();
     record(this.name, 'seek', { to: this.pausedAt });
     if (wasPlaying) await this.play(this.pausedAt);
     else this.onChange();
@@ -312,6 +357,7 @@ export class PlayerEngine implements LabEngine {
     this.pausedAt = 0;
     this.ref = null;
     this.set('READY');
+    await this.stopCues();
   }
 
   /** Live native-resource counts for the memory investigation. */
@@ -343,6 +389,7 @@ export class PlayerEngine implements LabEngine {
 
   async dispose(): Promise<void> {
     this.stopLoop();
+    await this.stopCues();
     // Stage A, build 118: loading a new class while one was playing left the
     // old song sounding under the new one. remove() released the player
     // without stopping it and iOS kept playing. Always pause before remove.
