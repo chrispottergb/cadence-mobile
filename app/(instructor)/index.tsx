@@ -1,5 +1,5 @@
-import { Placeholder } from '@/ui';
+import { Classes } from '@/builder/Classes';
 
 export default function Screen() {
-  return <Placeholder title="Home" note="Instructor home. Class overview and quick actions arrive in a later phase." />;
+  return <Classes home />;
 }
