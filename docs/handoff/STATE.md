@@ -2,6 +2,14 @@
 
 ## Current local update
 
+Step 4 now shows a class-creation progress card with actual music coverage,
+per-section readiness, current service stage and request elapsed time. Progress
+metadata persists with the existing request intent, including across pause and
+restart. It does not invent provider percentages or time remaining. Tests cover
+stage updates, elapsed time, actual coverage, older drafts, pause/reopen/resume,
+and transition into Preview without duplicating a paid request. Local lint,
+typecheck and all 116 tests pass. Physical validation remains outstanding.
+
 The owner installed Build 124 and reported that Instructor Home was empty.
 Home and Create still used Phase 1 placeholders; they now expose class creation
 and saved-class access. Home shares the Classes list, refreshes on return, and

@@ -4,6 +4,7 @@ import { Alert } from 'react-native';
 
 import { GuidedBuilder } from '@/builder/GuidedBuilder';
 import { InstructorBuilder } from '@/builder/InstructorBuilder';
+import { defaultInstructorSettings } from '@/soundtrack/instructor';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RunningClass } from '@/builder/RunningClass';
 import { MiniPlayer } from '@/playback/MiniPlayer';
@@ -27,7 +28,7 @@ jest.mock('expo-router', () => {
 jest.mock('expo-keep-awake', () => ({ activateKeepAwakeAsync: jest.fn(async () => undefined), deactivateKeepAwake: jest.fn(async () => undefined) }));
 jest.mock('@/auth/session', () => ({ useSession: () => ({ ready: true, session: { user: { id: 'user-1' } } }) }));
 jest.mock('@/data/gyms', () => ({ listMyGyms: jest.fn(async () => ({ gyms: [{ id: 'gym-1' }], error: null })) }));
-jest.mock('@/music/client', () => ({ getPlaybackUrl: jest.fn(async () => ({ ok: true, data: { url: 'https://signed/x', expiresInSeconds: 60 } })), fetchCapabilities: jest.fn(async () => ({ ok: false, error: 'network' })) }));
+jest.mock('@/music/client', () => ({ getPlaybackUrl: jest.fn(async () => ({ ok: true, data: { url: 'https://signed/x', expiresInSeconds: 60 } })), fetchCapabilities: jest.fn(async () => ({ ok: false, error: 'network' })), createGeneration: jest.fn(), getGeneration: jest.fn(), describeError: (s: string) => s, TERMINAL: ['READY', 'PARTIAL', 'FAILED'] }));
 jest.mock('expo-audio', () => ({
   useAudioPlayer: () => ({ replace: jest.fn(), play: jest.fn(), pause: jest.fn() }),
   useAudioPlayerStatus: () => ({ playing: false }),
@@ -108,6 +109,44 @@ beforeEach(() => {
 
 describe('Instructor setup', () => {
   beforeEach(async () => { await AsyncStorage.clear(); });
+
+  it('shows live Step 4 progress, preserves it on pause, and resumes the same job into Preview', async () => {
+    jest.useFakeTimers();
+    const music = jest.requireMock('@/music/client');
+    const settings = { ...defaultInstructorSettings(), source: 'generate', minutes: 5, warmup: 0, cooldown: 0 };
+    const job = (id: string, state: string, seconds?: number) => ({ ok: true, data: { id, state, errorCode: null, createdAt: new Date().toISOString(), candidates: seconds ? [{ id: `track-${id}`, title: 'Generated music', label: 'A', playable: true, status: 'ready', durationSeconds: seconds }] : [] } });
+    music.fetchCapabilities.mockResolvedValue({ ok: true, data: { customLyrics: { supported: true }, descriptionMode: { supported: true }, instrumental: true, styleTags: { supported: true }, negativeTags: { supported: false }, models: [], defaultModel: 'default', targetDuration: { supported: true, maxSeconds: 120 }, candidatesPerJob: 2 } });
+    music.createGeneration.mockResolvedValueOnce(job('first', 'QUEUED')).mockResolvedValueOnce(job('second', 'QUEUED'));
+    music.getGeneration.mockResolvedValueOnce(job('first', 'RENDERING')).mockResolvedValueOnce(job('first', 'READY', 100)).mockResolvedValueOnce(job('second', 'READY', 200));
+    try {
+      await AsyncStorage.setItem('instructor-class:v1:user-1:gym-1', JSON.stringify({ version: 1, settings }));
+      const first = await renderSettled(<InstructorBuilder />);
+      for (let i = 0; i < 3; i++) fireEvent.press(screen.getByTestId('ic-next'));
+      await act(async () => { fireEvent.press(screen.getByTestId('ic-build')); });
+      expect(screen.getByText('Waiting for music to start')).toBeTruthy();
+      expect(screen.getByTestId('class-coverage').props.accessibilityValue.now).toBe(0);
+      await act(async () => { jest.advanceTimersByTime(2500); });
+      expect(screen.getByText('Generating music')).toBeTruthy();
+      await act(async () => { jest.advanceTimersByTime(2500); });
+      expect(screen.getByTestId('class-coverage').props.accessibilityValue.now).toBe(33);
+      expect(music.createGeneration).toHaveBeenCalledTimes(2);
+      fireEvent.press(screen.getByText('Pause after current request'));
+      expect(screen.getByText('Pausing after the current request')).toBeTruthy();
+      await act(async () => { jest.advanceTimersByTime(2500); });
+      expect(screen.getByText('Creation paused')).toBeTruthy();
+      expect(screen.queryByTestId('class-creation-spinner')).toBeNull();
+      first.unmount();
+      await renderSettled(<InstructorBuilder />);
+      expect(screen.getByTestId('class-coverage').props.accessibilityValue.now).toBe(33);
+      await act(async () => { fireEvent.press(screen.getByTestId('ic-build')); });
+      expect(screen.getByTestId('gb-title')).toHaveTextContent('Preview');
+      expect(music.createGeneration).toHaveBeenCalledTimes(2);
+      expect(music.getGeneration).toHaveBeenLastCalledWith('second');
+    } finally {
+      music.fetchCapabilities.mockResolvedValue({ ok: false, error: 'network' });
+      jest.useRealTimers();
+    }
+  });
 
   it('builds, saves and starts a real 60-minute plan from instructor answers', async () => {
     await renderSettled(<InstructorBuilder />);

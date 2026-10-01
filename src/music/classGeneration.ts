@@ -2,13 +2,13 @@ import type { PlayableTrack } from '@/audiolab/assets';
 import { layoutMusic, MIN_PIECE_SECONDS, type GuidedPlan } from '@/soundtrack/guided';
 import { generationInput, type InstructorSettings } from '@/soundtrack/instructor';
 import { newId } from '@/soundtrack/model';
-import { createGeneration, describeError, getGeneration, TERMINAL, type Capabilities, type GenerateInput } from './client';
+import { createGeneration, describeError, getGeneration, TERMINAL, type Capabilities, type GenerateInput, type JobState } from './client';
 
 export interface ClassGeneration {
   plan: GuidedPlan;
   tracks: PlayableTrack[];
   requests: number;
-  pending?: { key: string; input: GenerateInput; sectionId: string; jobId?: string };
+  pending?: { key: string; input: GenerateInput; sectionId: string; jobId?: string; state?: JobState; startedAt?: string; processing?: boolean };
   failure?: string;
 }
 
@@ -25,7 +25,7 @@ export async function advanceGeneration(state: ClassGeneration, settings: Instru
   if (!next.pending) {
     if (next.requests >= 40) throw new Error('Generation paused after 40 requests. Keep the completed music and finish in the music editor.');
     const section = next.plan.sections.find(s => layoutMusic(s, s.minutes * 60).quietSeconds >= MIN_PIECE_SECONDS)!;
-    next = { ...next, requests: next.requests + 1, pending: { key: newId('class-music'), sectionId: section.id,
+    next = { ...next, requests: next.requests + 1, pending: { key: newId('class-music'), sectionId: section.id, startedAt: new Date().toISOString(),
       input: generationInput(settings, section, layoutMusic(section, section.minutes * 60).quietSeconds, caps, gymId) } };
     await save(next);
   }
@@ -34,7 +34,9 @@ export async function advanceGeneration(state: ClassGeneration, settings: Instru
   const result = pending.jobId ? await getGeneration(pending.jobId) : await createGeneration(pending.input, pending.key);
   if (!result.ok) throw new Error(describeError(result.error));
   const job = result.data;
-  next = { ...next, pending: { ...pending, jobId: job.id } };
+  next = { ...next, pending: { ...pending, jobId: job.id, state: job.state,
+    startedAt: job.createdAt ?? pending.startedAt ?? new Date().toISOString(),
+    processing: job.candidates.some(c => c.status === 'processing' || c.status === 'ready') } };
   await save(next);
   if (!TERMINAL.includes(job.state)) return next;
   const tracks: PlayableTrack[] = job.candidates.filter(c => c.playable && c.status === 'ready' && Number.isFinite(c.durationSeconds) && c.durationSeconds! > 0)

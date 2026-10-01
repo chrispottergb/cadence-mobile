@@ -13,6 +13,7 @@ import { newId } from '@/soundtrack/model';
 import { Button, Card, Field, Screen, space, Text } from '@/ui';
 import { Chip, ChipRow } from './parts';
 import { GuidedBuilder } from './GuidedBuilder';
+import { ClassCreationProgress } from './ClassCreationProgress';
 
 type Draft = { version: 1; settings: InstructorSettings; generation?: ClassGeneration; preview?: GuidedPlan };
 const STEPS = ['My class', 'Timing', 'Cues', 'Music'];
@@ -37,9 +38,12 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pausing, setPausing] = useState(false);
+  const scroll = useRef<ScrollView>(null);
   const running = useRef(false);
   const mounted = useRef(true);
   const writes = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => { if (busy) scroll.current?.scrollTo({ y: 0, animated: true }); }, [busy]);
   useEffect(() => {
     mounted.current = true;
     void Promise.all([AsyncStorage.getItem(storageKey), listPlayable()]).then(([stored, tracks]) => {
@@ -77,7 +81,7 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
     if (running.current) return;
     const error = setupError(s);
     if (error) { setStatus(error); return; }
-    running.current = true; setBusy(true); setStatus('');
+    running.current = true; setBusy(true); setPausing(false); setStatus('');
     try {
       if (s.source === 'library') {
         const selected = s.selectedTracks.map(id => library.find(t => t.trackId === id)).filter((t): t is PlayableTrack => !!t);
@@ -90,7 +94,6 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
       let generation = draftRef.current.generation ?? { plan: proposeClass(s), tracks: [], requests: 0 };
       await store({ ...draftRef.current, generation });
       while (mounted.current && running.current && !musicComplete(generation.plan) && !generation.failure) {
-        setStatus(`Creating music · ${generation.tracks.length} tracks ready. You can leave and resume later.`);
         generation = await advanceGeneration(generation, s, capabilities, gymId, async next => { await store({ ...draftRef.current, generation: next }); });
         if (generation.pending && !generation.failure) await new Promise(resolve => setTimeout(resolve, 2500));
       }
@@ -105,11 +108,11 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
     initialLibrary={[...library, ...(draft.generation?.tracks ?? [])]} onSaved={async () => { await writes.current; await AsyncStorage.removeItem(storageKey); }} />;
 
   const frozen = !!draft.generation;
-  return <Screen><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
+  return <Screen><ScrollView ref={scroll} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
     <Button title="‹ Classes" variant="ghost" onPress={() => router.back()} />
     <Text variant="display">Create your class</Text>
     <Text muted>{step + 1} of 4 · {STEPS[step]}</Text>
-    {frozen ? <Card><Text>Your music request and completed tracks are saved. Resume here, or continue to the editor with what is ready.</Text></Card> : <>
+    {frozen || busy ? <ClassCreationProgress generation={draft.generation} busy={busy} pausing={pausing} minutes={s.minutes} source={s.source} /> : <>
       {step === 0 ? <>
         <Text variant="title">What are you teaching?</Text>
         <Field accessibilityLabel="Class name" testID="ic-name" placeholder="Class name (optional)" value={s.name} maxLength={80} onChangeText={name => update({ name })} />
@@ -172,8 +175,8 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
     {status ? <Text accessibilityLiveRegion="polite">{status}</Text> : null}
     {step < 3 ? <Button testID="ic-next" title="Continue" onPress={() => { const error = setupError(s); if (error) setStatus(error); else { setStatus(''); setStep(step + 1); } }} /> : <Button testID="ic-build" title={frozen ? 'Resume music generation' : s.source === 'generate' ? 'Generate my class music' : 'Build my class'} loading={busy} disabled={!!draft.generation?.failure} onPress={() => void build()} />}
     {frozen && !busy ? <Button title="Keep completed music and open Preview" variant="secondary" onPress={() => void showPreview(draft.generation!.plan).catch(() => setStatus('Could not save draft.'))} /> : null}
-    {busy ? <Button title="Pause after current request" variant="secondary" onPress={() => { running.current = false; setStatus('Pausing. Your request and completed tracks will be kept.'); }} /> : null}
-    {step > 0 && !frozen ? <Button title="Back" variant="ghost" onPress={() => { setStatus(''); setStep(step - 1); }} /> : null}
+    {busy && s.source === 'generate' ? <Button title={pausing ? 'Pausing…' : 'Pause after current request'} disabled={pausing} variant="secondary" onPress={() => { running.current = false; setPausing(true); }} /> : null}
+    {step > 0 && !frozen && !busy ? <Button title="Back" variant="ghost" onPress={() => { setStatus(''); setStep(step - 1); }} /> : null}
   </ScrollView></Screen>;
 }
 
