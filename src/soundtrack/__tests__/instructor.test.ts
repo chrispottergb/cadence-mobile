@@ -1,5 +1,5 @@
 import { buildSoundtrack, cueOffsets, guidedState, layoutMusic } from '../guided';
-import { defaultInstructorSettings, fillFromLibrary, generationInput, proposeClass, setupError } from '../instructor';
+import { defaultInstructorSettings, fillFromLibrary, generationInput, proposeClass, setupError, setupStepError } from '../instructor';
 import { parseSoundtrack, toPlan } from '../model';
 import { speechText } from '../speech';
 import type { Capabilities } from '@/music/client';
@@ -69,9 +69,20 @@ it('keeps coaching text out of generated lyrics and respects provider capabiliti
 it('rejects invalid timings and empty spoken instructions', () => {
   const s = defaultInstructorSettings();
   expect(setupError({ ...s, minutes: NaN })).toMatch(/valid/);
-  expect(setupError({ ...s, bpm: '999' })).toMatch(/BPM/);
+  expect(setupError({ ...s, source: 'generate', bpm: '999' })).toMatch(/BPM/);
   s.instructions = [{ id: 's', text: '', sound: 'speech', scope: 'main', when: { at: 'every', seconds: 0 } }];
   expect(setupError(s)).toMatch(/spoken/);
   s.instructions[0]!.text = 'Switch';
   expect(setupError(s)).toMatch(/intervals/);
+});
+
+it('lets instructors reach the step that repairs dependent settings', () => {
+  const s = { ...defaultInstructorSettings(), minutes: 15, timed: true, rounds: 8 };
+  expect(setupStepError(s, 0)).toBeNull();
+  expect(setupStepError(s, 1)).toMatch(/longer/);
+  s.minutes = 60;
+  s.instructions = [{ id: 'cue', text: '', sound: 'speech', scope: 'main', when: { at: 'every', seconds: 120 } }];
+  expect(setupStepError(s, 1)).toBeNull();
+  expect(setupStepError(s, 2)).toMatch(/spoken/);
+  expect(setupError(s)).toMatch(/spoken/);
 });

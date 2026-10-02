@@ -1,8 +1,9 @@
 import { ExperienceTabs } from '@/ui/shell';
+import { InstructorTutorialProvider } from '@/builder/InstructorTutorial';
 
 export default function InstructorLayout() {
   return (
-    <ExperienceTabs
+    <InstructorTutorialProvider><ExperienceTabs
       title="Instructor"
       tabs={[
         { name: 'index', label: 'Home' },
@@ -11,6 +12,6 @@ export default function InstructorLayout() {
         { name: 'students', label: 'Students' },
         { name: 'gym', label: 'Gym' },
       ]}
-    />
+    /></InstructorTutorialProvider>
   );
 }

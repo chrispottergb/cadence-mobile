@@ -6,10 +6,17 @@ import { listMyGyms } from '@/data/gyms';
 import { listSoundtracks, type SoundtrackRow } from '@/data/soundtracks';
 import { dur } from '@/soundtrack/guided';
 import { Button, Card, colors, Screen, space, Text } from '@/ui';
+import { useInstructorTutorial } from './InstructorTutorial';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSession } from '@/auth/session';
 
 /** The gym's classes (class soundtracks are gym assets). */
 export function Classes({ home = false }: { home?: boolean }) {
   const router = useRouter();
+  const { openTutorial } = useInstructorTutorial();
+  const { session } = useSession();
+  const userId = session?.user.id;
+  const [hasDraft, setHasDraft] = useState(false);
   const [gymId, setGymId] = useState<string | null>(null);
   const [rows, setRows] = useState<SoundtrackRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +33,9 @@ export function Classes({ home = false }: { home?: boolean }) {
       if (g.error) throw new Error(g.error);
       const id = g.gyms[0]?.id ?? null;
       setGymId(id);
+      const stored = home && id && userId ? await AsyncStorage.getItem(`instructor-class:v1:${userId}:${id}`).catch(() => null) : null;
+      if (current !== request.current) return;
+      setHasDraft(!!stored);
       if (id) {
         const r = await listSoundtracks(id);
         if (current !== request.current) return;
@@ -37,7 +47,7 @@ export function Classes({ home = false }: { home?: boolean }) {
     } finally {
       if (current === request.current) setLoading(false);
     }
-  }, []);
+  }, [home, userId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -51,9 +61,11 @@ export function Classes({ home = false }: { home?: boolean }) {
       <ScrollView contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }} refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}>
         <Text variant="display">{home ? 'Ready to teach?' : 'Classes'}</Text>
         <Text muted>Choose your class length, purpose, music and cues. Preview your soundtrack, then start teaching.</Text>
-        <Button testID="st-new" title="Create class soundtrack" onPress={() => router.push('/soundtracks/new')} disabled={!gymId} />
+        <Button testID="st-new" title={hasDraft ? 'Continue creating your class' : 'Create class soundtrack'} onPress={() => router.push('/soundtracks/new')} disabled={!gymId} />
+        {hasDraft ? <Text muted>Your draft is saved. Pick up where you left off.</Text> : null}
         {!loading && !gymId && !error ? <Text muted>Create or join a gym as staff to build classes.</Text> : null}
         {home ? <Button title="Open music library" variant="secondary" onPress={() => router.push('/(instructor)/library')} /> : null}
+        {home ? <Button testID="home-tutorial" title="How to create a class · Tutorial" variant="ghost" onPress={openTutorial} /> : null}
         <Text variant="title">Your saved classes</Text>
         {loading && !rows.length ? <Text muted>Loading your classes…</Text> : null}
         {!loading && !error && gymId && !rows.length ? <Card style={{ gap: space.sm }}><Text variant="title">Your first class starts here</Text><Text muted>Create a class soundtrack above. Once saved, it will appear here ready to edit or teach again.</Text></Card> : null}

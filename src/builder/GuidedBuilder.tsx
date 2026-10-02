@@ -65,6 +65,8 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
   const [diverged, setDiverged] = useState(false);
   const [dirty, setDirty] = useState(!!initialPlan);
   const [step, setStep] = useState(id || initialPlan ? OVERVIEW : 0);
+  const scroll = useRef<ScrollView>(null);
+  useEffect(() => { scroll.current?.scrollTo({ y: 0, animated: false }); }, [step]);
   const [reached, setReached] = useState(id || initialPlan ? OVERVIEW : 0);
   const [ready, setReady] = useState(!id);
   const [status, setStatus] = useState<string | null>(id ? 'Loading...' : null);
@@ -134,6 +136,7 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
     return x ? x.end - x.start : 0;
   };
   const total = totalMinutes(plan);
+  const simple = !!plan.instructor;
   const mine = classId !== null && cls.soundtrackId === classId;
   const active = mine && isClassActive(cls);
 
@@ -244,6 +247,8 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
     else Alert.alert('Replace your sections?', `This replaces your sections with ${t.title}.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Replace', onPress: apply }]);
   };
 
+  const duplicate = () => { setClassId(null); setName(`${name} copy`); setRevision(0); setDirty(true); setStatus('New copy. Save when ready; the original is unchanged.'); };
+
   const moveSection = (sid: string, dir: -1 | 1) =>
     change((p) => {
       const i = p.sections.findIndex((s) => s.id === sid);
@@ -281,7 +286,7 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scroll} contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <Pressable testID="gb-leave" accessibilityRole="button" onPress={leave} hitSlop={10} style={{ minHeight: 44, justifyContent: 'center' }}>
             <Text style={{ color: colors.accent, fontWeight: '700' }}>‹ Classes</Text>
@@ -291,7 +296,7 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
           </Text>
         </View>
 
-        <View style={{ flexDirection: 'row', gap: 4 }}>
+        {simple ? step !== OVERVIEW ? <Button title="‹ Back to Preview" disabled={!canContinue} variant="secondary" onPress={() => go(OVERVIEW)} /> : null : <View style={{ flexDirection: 'row', gap: 4 }}>
           {STEPS.map((label, i) => {
             const enabled = i <= reached && !(diverged && i < OVERVIEW);
             return (
@@ -312,7 +317,7 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
               </Pressable>
             );
           })}
-        </View>
+        </View>}
 
         <Text testID="gb-title" variant="display">
           {STEP_TITLES[step]}
@@ -320,7 +325,7 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
         {step === OVERVIEW ? <>
           <ChipRow><Chip label="With cues" selected={doc.cuesEnabled !== false} onPress={() => { change(p => ({ ...p, cuesEnabled: true })); if (diverged) setLoaded(d => d ? { ...d, cuesEnabled: true } : d); }} /><Chip label="Music only" selected={doc.cuesEnabled === false} onPress={() => { change(p => ({ ...p, cuesEnabled: false })); if (diverged) setLoaded(d => d ? { ...d, cuesEnabled: false } : d); }} /></ChipRow>
           {!diverged && plan.classCues?.length ? <Card style={{ gap: space.sm }}><Text variant="title">Whole-class cues</Text>{plan.classCues.map(c => <View key={c.id}><Text>{c.speechText ?? c.name} · {describeWhen(c.when)}</Text><Button title={`Edit ${c.name}`} variant="ghost" onPress={() => setEditingCue({ sectionId: 'class', ruleId: c.id })} /></View>)}</Card> : null}
-          {classId ? <Button title="Duplicate class" variant="secondary" disabled={busy} onPress={() => { setClassId(null); setName(`${name} copy`); setRevision(0); setDirty(true); setStatus('New copy. Save when ready; the original is unchanged.'); }} /> : null}
+          {classId && !simple ? <Button title="Duplicate class" variant="secondary" disabled={busy} onPress={duplicate} /> : null}
         </> : null}
 
         {step === 0 ? (
@@ -570,8 +575,11 @@ export function GuidedBuilder({ id, initialPlan, initialName = '', initialLibrar
             onStart={() => void startRunning()}
             onAdvanced={() => void openAdvanced()}
             onEdit={(i) => go(i)}
+            simple={simple}
+            onSectionMusic={setPicking}
+            onDuplicate={duplicate}
           />
-        ) : (
+        ) : simple ? <Button title="Done · Back to Preview" disabled={!canContinue} onPress={() => go(OVERVIEW)} /> : (
           <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.sm }}>
             {step > 0 ? (
               <View style={{ flex: 1 }}>
@@ -796,6 +804,9 @@ function Overview({
   onStart,
   onAdvanced,
   onEdit,
+  simple,
+  onSectionMusic,
+  onDuplicate,
 }: {
   doc: ClassSoundtrack;
   plan: GuidedPlan;
@@ -811,7 +822,11 @@ function Overview({
   onStart: () => void;
   onAdvanced: () => void;
   onEdit: (step: number) => void;
+  simple: boolean;
+  onSectionMusic: (id: string) => void;
+  onDuplicate: () => void;
 }) {
+  const [more, setMore] = useState(false);
   const unplanned = plan.minutes - totalMinutes(plan);
   const playback = toPlan(doc, cueSec);
   const rows = diverged
@@ -863,8 +878,9 @@ function Overview({
           key={r.key}
           testID={`gb-overview-${i}`}
           accessibilityRole="button"
+          accessibilityLabel={simple ? `Change music for ${r.title}` : undefined}
           disabled={diverged}
-          onPress={() => onEdit(2)}
+          onPress={() => simple ? onSectionMusic(r.key) : onEdit(2)}
           style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, padding: space.md, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderLeftWidth: 6, borderLeftColor: r.color }}
         >
           <View style={{ flex: 1 }}>
@@ -873,6 +889,7 @@ function Overview({
               {r.songs} {r.songs === 1 ? 'song' : 'songs'} · {r.cues} {r.cues === 1 ? 'cue' : 'cues'}
               {r.note ? ` · ${r.note}` : ''}
             </Text>
+            {simple && !diverged ? <Text variant="caption" style={{ color: colors.accent }}>Change music</Text> : null}
           </View>
           <Text variant="title">{r.minutes} min</Text>
         </Pressable>
@@ -882,16 +899,25 @@ function Overview({
       {playback.droppedCueKeys.length || playback.deferredCueKeys.length ? <Text muted>{playback.droppedCueKeys.length} overlapping cues will be skipped; {playback.deferredCueKeys.length} will play slightly later. Adjust cue timing to hear every instruction.</Text> : null}
       {message ? <Text style={{ color: colors.danger }}>{message}</Text> : null}
 
-      <Button testID="gb-start" title={active ? 'Open class view' : 'START CLASS'} onPress={onStart} loading={busy} />
+      <Button testID="gb-start" title={active ? 'Open class view' : simple && (dirty || !saved) ? 'Save and start class' : 'START CLASS'} onPress={onStart} loading={busy} />
       <View style={{ flexDirection: 'row', gap: space.sm }}>
         <View style={{ flex: 1 }}>
-          <Button testID="gb-preview" title={active ? '■ Stop' : '▶ Preview class'} variant="secondary" onPress={onPreview} />
+          <Button testID="gb-preview" title={active ? '■ Stop' : simple ? 'Listen to class' : '▶ Preview class'} variant="secondary" disabled={busy} onPress={onPreview} />
         </View>
         <View style={{ flex: 1 }}>
           <Button testID="gb-save" title={dirty || !saved ? 'Save class' : 'Saved'} variant="secondary" disabled={(!dirty && saved) || busy} onPress={onSave} />
         </View>
       </View>
-      <Button testID="gb-advanced" title="Advanced edit" variant="ghost" onPress={onAdvanced} />
+      {simple ? <>
+        <Text muted>Listening saves your class first. Use Stop when you’re done listening.</Text>
+        <Text variant="title">Make an adjustment</Text>
+        <View style={{ gap: space.sm }}>
+          {['Name and length', 'Sections', 'Music', 'Timing and cues'].map((label, index) => <Button key={label} testID={`gb-edit-${index}`} title={`Edit ${label.toLowerCase()}`} variant="secondary" disabled={diverged} onPress={() => onEdit(index)} />)}
+        </View>
+        <Button title={more ? 'Hide more options' : 'More class options'} variant="ghost" onPress={() => setMore(!more)} />
+        {more && saved ? <Button title="Duplicate class" variant="secondary" disabled={busy} onPress={onDuplicate} /> : null}
+      </> : null}
+      {!simple || more || diverged ? <Button testID="gb-advanced" title="Advanced edit" variant="ghost" onPress={onAdvanced} /> : null}
     </View>
   );
 }

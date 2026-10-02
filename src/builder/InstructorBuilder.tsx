@@ -1,21 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useRef, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSession } from '@/auth/session';
 import { listPlayable, type PlayableTrack } from '@/audiolab/assets';
 import { listMyGyms } from '@/data/gyms';
 import { advanceGeneration, musicComplete, type ClassGeneration } from '@/music/classGeneration';
 import { fetchCapabilities, describeError, type Capabilities } from '@/music/client';
-import { dur, roundsSeconds, type GuidedPlan, type CueWhen } from '@/soundtrack/guided';
-import { defaultInstructorSettings, fillFromLibrary, proposeClass, PURPOSES, setupError, VOCALS, type InstructorSettings, type Instruction } from '@/soundtrack/instructor';
+import { describeWhen, dur, layoutMusic, roundsSeconds, type GuidedPlan, type CueWhen } from '@/soundtrack/guided';
+import { defaultInstructorSettings, fillFromLibrary, proposeClass, PURPOSES, setupStepError, VOCALS, type InstructorSettings, type Instruction } from '@/soundtrack/instructor';
 import { newId } from '@/soundtrack/model';
 import { Button, Card, Field, Screen, space, Text } from '@/ui';
 import { Chip, ChipRow } from './parts';
 import { GuidedBuilder } from './GuidedBuilder';
 import { ClassCreationProgress } from './ClassCreationProgress';
+import { LibraryMusicChoices } from './LibraryMusicChoices';
 
-type Draft = { version: 1; settings: InstructorSettings; generation?: ClassGeneration; preview?: GuidedPlan };
+type Draft = { version: 1; settings: InstructorSettings; step?: number; generation?: ClassGeneration; preview?: GuidedPlan };
 const STEPS = ['My class', 'Timing', 'Cues', 'Music'];
 
 export function InstructorBuilder() {
@@ -34,6 +35,10 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
   const draftRef = useRef(draft);
   const [ready, setReady] = useState(false);
   const [step, setStep] = useState(0);
+  const [customLength, setCustomLength] = useState(false);
+  const [adjustSections, setAdjustSections] = useState(false);
+  const [customCues, setCustomCues] = useState<Record<string, boolean>>({});
+  const [musicDetails, setMusicDetails] = useState(false);
   const [library, setLibrary] = useState<PlayableTrack[]>([]);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [status, setStatus] = useState('');
@@ -43,7 +48,7 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
   const running = useRef(false);
   const mounted = useRef(true);
   const writes = useRef<Promise<void>>(Promise.resolve());
-  useEffect(() => { if (busy) scroll.current?.scrollTo({ y: 0, animated: true }); }, [busy]);
+  useEffect(() => { scroll.current?.scrollTo({ y: 0, animated: false }); }, [busy, step]);
   useEffect(() => {
     mounted.current = true;
     void Promise.all([AsyncStorage.getItem(storageKey), listPlayable()]).then(([stored, tracks]) => {
@@ -52,7 +57,9 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
         const value = JSON.parse(stored) as Draft;
         if (value.version !== 1 || !value.settings || !Array.isArray(value.settings.instructions) || !Array.isArray(value.settings.selectedTracks)) throw new Error('The saved draft could not be opened.');
         draftRef.current = value; setDraft(value);
-        if (value.generation) setStep(3);
+        setStep(value.generation ? 3 : Number.isInteger(value.step) && value.step! >= 0 && value.step! <= 3 ? value.step! : 0);
+        setCustomLength(![30, 45, 60, 90].includes(value.settings.minutes));
+        setMusicDetails(!!value.settings.bpm || !!value.settings.lyrics);
       }
       setLibrary(tracks.filter(t => t.demo === undefined));
     }).catch(e => { if (mounted.current) setStatus(e instanceof Error ? e.message : 'Could not restore draft.'); })
@@ -75,12 +82,24 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
     void store(next).catch(() => setStatus('Draft could not be saved on this device.'));
   };
   const s = draft.settings;
+  const go = (next: number) => {
+    setStep(next); setStatus('');
+    void store({ ...draftRef.current, step: next }).catch(() => setStatus('Draft could not be saved on this device.'));
+  };
+  const showError = (errorStep: number, error: string) => {
+    go(errorStep); setStatus(error);
+    if (errorStep === 0) { setCustomLength(true); setAdjustSections(true); }
+    if (errorStep === 2) setCustomCues(Object.fromEntries(s.instructions.map(i => [i.id, true])));
+    if (errorStep === 3) setMusicDetails(true);
+  };
   const instruction = (id: string, patch: Partial<Instruction>) => update({ instructions: s.instructions.map(i => i.id === id ? { ...i, ...patch } : i) });
   const showPreview = async (plan: GuidedPlan) => { await store({ ...draftRef.current, preview: plan }); };
   const build = async () => {
     if (running.current) return;
-    const error = setupError(s);
-    if (error) { setStatus(error); return; }
+    for (let errorStep = 0; errorStep < 4; errorStep++) {
+      const error = setupStepError(s, errorStep);
+      if (error) { showError(errorStep, error); return; }
+    }
     running.current = true; setBusy(true); setPausing(false); setStatus('');
     try {
       if (s.source === 'library') {
@@ -108,7 +127,10 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
     initialLibrary={[...library, ...(draft.generation?.tracks ?? [])]} onSaved={async () => { await writes.current; await AsyncStorage.removeItem(storageKey); }} />;
 
   const frozen = !!draft.generation;
-  return <Screen><ScrollView ref={scroll} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: space.md, paddingBottom: space.xxl }}>
+  const selected = s.selectedTracks.map(id => library.find(t => t.trackId === id)).filter((t): t is PlayableTrack => !!t);
+  const coveragePlan = !setupStepError(s, 0) ? fillFromLibrary(proposeClass({ ...s, timed: false, cuesEnabled: false, source: 'library' }), selected, s.repeatMusic) : null;
+  const quietSeconds = coveragePlan?.sections.reduce((sum, section) => sum + layoutMusic(section, section.minutes * 60).quietSeconds, 0) ?? s.minutes * 60;
+  return <Screen><KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}><ScrollView ref={scroll} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: space.md, paddingBottom: space.lg }}>
     <Button title="‹ Classes" variant="ghost" onPress={() => router.back()} />
     <Text variant="display">Create your class</Text>
     <Text muted>{step + 1} of 4 · {STEPS[step]}</Text>
@@ -116,19 +138,21 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
       {step === 0 ? <>
         <Text variant="title">What are you teaching?</Text>
         <Field accessibilityLabel="Class name" testID="ic-name" placeholder="Class name (optional)" value={s.name} maxLength={80} onChangeText={name => update({ name })} />
-        <Text>Class length</Text><ChipRow>{[30, 45, 60, 90].map(minutes => <Chip key={minutes} label={`${minutes} min`} selected={s.minutes === minutes} onPress={() => update({ minutes })} />)}</ChipRow>
-        <NumberField label="Class length in minutes" value={s.minutes} onChange={minutes => update({ minutes })} />
+        <Text>Class length</Text><ChipRow>{[30, 45, 60, 90].map(minutes => <Chip key={minutes} label={`${minutes} min`} selected={!customLength && s.minutes === minutes} onPress={() => { setCustomLength(false); update({ minutes }); }} />)}<Chip label="Custom length" selected={customLength} onPress={() => setCustomLength(true)} /></ChipRow>
+        {customLength ? <NumberField label="Class length in minutes" value={s.minutes} onChange={minutes => update({ minutes })} /> : null}
         <Text>Class purpose</Text><ChipRow>{PURPOSES.map(purpose => <Chip key={purpose} label={purpose} selected={s.purpose === purpose} onPress={() => update({ purpose })} />)}</ChipRow>
         {s.purpose === 'Custom' ? <Field accessibilityLabel="Class purpose" placeholder="What should this class achieve?" value={s.customPurpose} maxLength={140} onChangeText={customPurpose => update({ customPurpose })} /> : null}
-        <Text muted>We’ll propose warm-up, main work, and cooldown. You can adjust the sections in Preview.</Text>
-        <NumberField label="Warm-up minutes" value={s.warmup} onChange={warmup => update({ warmup })} />
-        <NumberField label="Cooldown minutes" value={s.cooldown} onChange={cooldown => update({ cooldown })} />
+        <Text muted>{s.warmup} min warm-up · {Math.max(0, s.minutes - s.warmup - s.cooldown)} min main work · {s.cooldown} min cooldown</Text>
+        <Button title={adjustSections ? 'Done adjusting sections' : 'Adjust warm-up and cooldown'} variant="ghost" onPress={() => setAdjustSections(!adjustSections)} />
+        {adjustSections ? <><NumberField label="Warm-up minutes" value={s.warmup} onChange={warmup => update({ warmup })} />
+        <NumberField label="Cooldown minutes" value={s.cooldown} onChange={cooldown => update({ cooldown })} /></> : null}
       </> : null}
       {step === 1 ? <>
         <Text variant="title">Does the main work use timed rounds?</Text>
         <Choice value={s.timed} onChange={timed => update({ timed })} yes="Timed rounds" no="Continuous practice" />
         <Text muted>Main work: {Math.max(0, s.minutes - s.warmup - s.cooldown)} minutes.</Text>
         {s.timed ? <>
+          <Text>Quick round settings</Text><ChipRow>{[[180, 60], [120, 30], [60, 30]].map(([workSeconds, restSeconds]) => <Chip key={workSeconds} label={`${dur(workSeconds!)} work / ${dur(restSeconds!)} rest`} selected={s.workSeconds === workSeconds && s.restSeconds === restSeconds} onPress={() => update({ workSeconds, restSeconds })} />)}</ChipRow>
           <NumberField label="Work seconds per round" value={s.workSeconds} onChange={workSeconds => update({ workSeconds })} />
           <NumberField label="Rest seconds between rounds" value={s.restSeconds} onChange={restSeconds => update({ restSeconds })} />
           <NumberField label="Number of rounds" value={s.rounds} onChange={rounds => update({ rounds })} />
@@ -146,9 +170,14 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
             <Text variant="title">Cue {index + 1}</Text>
             <ChipRow>{(['speech', 'bell', 'switch', 'thirty'] as const).map(sound => <Chip key={sound} label={{ speech: 'Speak my text', bell: 'Bell', switch: 'Switch partners', thirty: '30 seconds' }[sound]} selected={i.sound === sound} onPress={() => instruction(i.id, { sound })} />)}</ChipRow>
             {i.sound === 'speech' ? <Field accessibilityLabel={`Spoken instruction ${index + 1}`} placeholder="e.g. Switch partners and reset" value={i.text} multiline maxLength={240} onChangeText={text => instruction(i.id, { text })} /> : null}
+            <Text muted>{describeWhen(i.when)} · {{ class: 'Whole class', warmup: 'Warm-up', main: 'Main work', cooldown: 'Cooldown' }[i.scope]}</Text>
+            {!customCues[i.id] && i.when.at === 'every' ? <ChipRow>{[30, 60, 120].map(seconds => <Chip key={seconds} label={`Every ${dur(seconds)}`} selected={'seconds' in i.when && i.when.seconds === seconds} onPress={() => instruction(i.id, { when: { at: 'every', seconds } })} />)}</ChipRow> : null}
+            <Button title={customCues[i.id] ? 'Done customizing cue' : 'Customize cue timing and location'} variant="ghost" onPress={() => setCustomCues(previous => ({ ...previous, [i.id]: !previous[i.id] }))} />
+            {customCues[i.id] ? <>
             <Text>Where?</Text><ChipRow>{(['class', ...(s.warmup ? ['warmup' as const] : []), 'main', ...(s.cooldown ? ['cooldown' as const] : [])] as const).map(scope => <Chip key={scope} label={{ class: 'Whole class', warmup: 'Warm-up', main: 'Main work', cooldown: 'Cooldown' }[scope]} selected={i.scope === scope} onPress={() => instruction(i.id, { scope, when: { at: 'every', seconds: 120 } })} />)}</ChipRow>
             <Text>When?</Text><ChipRow>{(['every', 'once', 'section_start', 'before_section_end', ...(s.timed && i.scope === 'main' ? ['every_round' as const, 'round_start' as const, 'before_round_end' as const] : [])] as const).map(at => <Chip key={at} label={{ every: 'At intervals', once: 'At one time', section_start: 'At the start', before_section_end: 'Before the end', every_round: 'During each work round', round_start: 'Each round start', before_round_end: 'Before each round ends' }[at]} selected={i.when.at === at} onPress={() => instruction(i.id, { when: ['every', 'every_round', 'once', 'before_section_end', 'before_round_end'].includes(at) ? { at, seconds: 30 } as CueWhen : { at } as CueWhen })} />)}</ChipRow>
             {'seconds' in i.when ? <NumberField label={i.when.at === 'every' || i.when.at === 'every_round' ? 'Repeat every (seconds)' : i.when.at.startsWith('before') ? 'Seconds before the end' : 'Seconds after the start'} value={i.when.seconds} onChange={seconds => instruction(i.id, { when: { ...i.when, seconds } as CueWhen })} /> : null}
+            </> : null}
             <Button title="Remove cue" variant="ghost" onPress={() => update({ instructions: s.instructions.filter(x => x.id !== i.id) })} />
           </Card>)}
           <Button title="Add a cue or spoken instruction" variant="secondary" onPress={() => update({ instructions: [...s.instructions, { id: newId('instruction'), text: '', sound: 'speech', scope: 'main', when: { at: 'every', seconds: 120 } }] })} />
@@ -159,25 +188,31 @@ function Setup({ storageKey, gymId }: { storageKey: string; gymId: string }) {
         <ChipRow><Chip label="Use my library" selected={s.source === 'library'} onPress={() => update({ source: 'library' })} /><Chip label="Generate new music" selected={s.source === 'generate'} onPress={() => update({ source: 'generate' })} /></ChipRow>
         {s.source === 'generate' ? <>
           <Field accessibilityLabel="Music style" placeholder="Music style, e.g. ambient, house, hip-hop" value={s.genre} maxLength={140} onChangeText={genre => update({ genre })} />
-          <Field accessibilityLabel="Target BPM" placeholder="BPM · choose for me" keyboardType="number-pad" value={s.bpm} onChangeText={bpm => update({ bpm })} />
+          <ChipRow>{['Electronic', 'Hip-hop', 'Ambient', 'Rock'].map(genre => <Chip key={genre} label={genre} selected={s.genre === genre} onPress={() => update({ genre })} />)}</ChipRow>
           <Text>Vocals</Text><ChipRow>{VOCALS.map(vocals => <Chip key={vocals} label={vocals === 'Instrumental' ? 'Instrumental · no lyrics' : vocals} selected={s.vocals === vocals} onPress={() => update({ vocals })} />)}</ChipRow>
-          {s.vocals !== 'Instrumental' ? <Field accessibilityLabel="Optional song lyrics" placeholder="Song lyrics (optional). Leave empty for generated lyrics." multiline maxLength={caps?.customLyrics.maxChars ?? 3000} value={s.lyrics} onChangeText={lyrics => update({ lyrics })} /> : null}
+          <Text muted>{s.bpm ? `${s.bpm} BPM` : 'Tempo chosen for your class'}{s.vocals !== 'Instrumental' && s.lyrics ? ' · Your lyrics' : ''}</Text>
+          <Button title={musicDetails ? 'Hide music details' : 'Customize BPM and lyrics'} variant="ghost" onPress={() => setMusicDetails(!musicDetails)} />
+          {musicDetails ? <><Field accessibilityLabel="Target BPM" placeholder="BPM · choose for me" keyboardType="number-pad" value={s.bpm} onChangeText={bpm => update({ bpm })} />
+          {s.vocals !== 'Instrumental' ? <Field accessibilityLabel="Optional song lyrics" placeholder="Song lyrics (optional). Leave empty for generated lyrics." multiline maxLength={caps?.customLyrics.maxChars ?? 3000} value={s.lyrics} onChangeText={lyrics => update({ lyrics })} /> : null}</> : null}
           <Text muted>Style and BPM guide generation; listen to Preview to confirm the result. Music generation uses your gym’s allowance and may take several minutes. This service does not report your remaining allowance here.</Text>
         </> : <>
           <Text muted>Tap tracks in the order you want. Style and vocals come from the tracks you select.</Text>
           {!library.length ? <Text>No library music is available. Choose Generate new music.</Text> : null}
-          {library.map(t => <Chip key={t.trackId} label={`${s.selectedTracks.includes(t.trackId) ? `${s.selectedTracks.indexOf(t.trackId) + 1}. ` : ''}${t.title} · ${dur(t.durationSeconds)}`} selected={s.selectedTracks.includes(t.trackId)} onPress={() => update({ selectedTracks: s.selectedTracks.includes(t.trackId) ? s.selectedTracks.filter(id => id !== t.trackId) : [...s.selectedTracks, t.trackId] })} />)}
+          <LibraryMusicChoices tracks={library} selected={s.selectedTracks} onChoose={id => update({ selectedTracks: s.selectedTracks.includes(id) ? s.selectedTracks.filter(trackId => trackId !== id) : [...s.selectedTracks, id] })} />
         </>}
         <Text>May tracks repeat to fill the class?</Text><Choice value={s.repeatMusic} onChange={repeatMusic => update({ repeatMusic })} yes="Allow repeats" no="Use different tracks" />
         <Text muted>{s.repeatMusic ? 'Tracks may repeat. Each section ends on time.' : s.source === 'generate' ? 'We’ll request more music until each section is filled, up to 40 requests.' : 'Any unfilled time will be shown as quiet in Preview.'}</Text>
+        {s.source === 'library' ? <Text accessibilityLiveRegion="polite">{selected.length} selected · {dur(Math.max(0, s.minutes * 60 - quietSeconds))} of {s.minutes} min filled{quietSeconds > 0 ? ` · ${dur(quietSeconds)} without music. Add tracks or allow repeats.` : ''}</Text> : null}
+        <Card style={{ gap: space.xs }}><Text variant="title">Your class at a glance</Text><Text>{s.minutes} min · {s.purpose === 'Custom' ? s.customPurpose : s.purpose}</Text><Text>{s.timed ? `${s.rounds} rounds · ${dur(s.workSeconds)} work / ${dur(s.restSeconds)} rest` : 'Continuous practice'} · {s.cuesEnabled && (s.instructions.length > 0 || (s.timed && s.roundCues)) ? 'With cues' : 'Music only'}</Text><Text muted>You can edit sections, music and cues in Preview.</Text></Card>
       </> : null}
     </>}
+  </ScrollView><View style={{ gap: space.xs, paddingTop: space.sm }}>
     {status ? <Text accessibilityLiveRegion="polite">{status}</Text> : null}
-    {step < 3 ? <Button testID="ic-next" title="Continue" onPress={() => { const error = setupError(s); if (error) setStatus(error); else { setStatus(''); setStep(step + 1); } }} /> : <Button testID="ic-build" title={frozen ? 'Resume music generation' : s.source === 'generate' ? 'Generate my class music' : 'Build my class'} loading={busy} disabled={!!draft.generation?.failure} onPress={() => void build()} />}
+    {step < 3 ? <Button testID="ic-next" title={`Continue to ${STEPS[step + 1]}`} onPress={() => { const error = setupStepError(s, step); if (error) showError(step, error); else go(step + 1); }} /> : <Button testID="ic-build" title={frozen ? 'Resume music generation' : s.source === 'generate' ? 'Generate my class music' : 'Build my class'} loading={busy} disabled={!!draft.generation?.failure} onPress={() => void build()} />}
     {frozen && !busy ? <Button title="Keep completed music and open Preview" variant="secondary" onPress={() => void showPreview(draft.generation!.plan).catch(() => setStatus('Could not save draft.'))} /> : null}
     {busy && s.source === 'generate' ? <Button title={pausing ? 'Pausing…' : 'Pause after current request'} disabled={pausing} variant="secondary" onPress={() => { running.current = false; setPausing(true); }} /> : null}
-    {step > 0 && !frozen && !busy ? <Button title="Back" variant="ghost" onPress={() => { setStatus(''); setStep(step - 1); }} /> : null}
-  </ScrollView></Screen>;
+    {step > 0 && !frozen && !busy ? <Button title="Back" variant="ghost" onPress={() => go(step - 1)} /> : null}
+  </View></KeyboardAvoidingView></Screen>;
 }
 
 function Choice({ value, onChange, yes = 'Yes', no = 'No' }: { value: boolean; onChange: (value: boolean) => void; yes?: string; no?: string }) {

@@ -41,16 +41,29 @@ export const defaultInstructorSettings = (): InstructorSettings => ({
 });
 
 export function setupError(s: InstructorSettings): string | null {
-  const numbers = [s.minutes, s.warmup, s.cooldown, s.workSeconds, s.restSeconds, s.rounds];
-  if (!numbers.every(Number.isFinite)) return 'Enter valid class and round durations.';
+  for (let step = 0; step < 4; step++) {
+    const error = setupStepError(s, step);
+    if (error) return error;
+  }
+  return null;
+}
+
+/** Validate only the visible step so a later setting cannot block navigation to its fix. */
+export function setupStepError(s: InstructorSettings, step: number): string | null {
+  if (step === 0) {
+  if (![s.minutes, s.warmup, s.cooldown].every(Number.isFinite)) return 'Enter valid class durations.';
   if (s.minutes < 5 || s.minutes > 240) return 'Choose a class length from 5 to 240 minutes.';
   if (s.warmup < 0 || s.cooldown < 0 || s.warmup + s.cooldown >= s.minutes) return 'Leave some class time between warm-up and cooldown.';
   if (s.purpose === 'Custom' && !s.customPurpose.trim()) return 'Describe the purpose of your class.';
+  if (![s.minutes, s.warmup, s.cooldown].every(Number.isInteger)) return 'Use whole minutes for the class sections.';
+  }
+  if (step === 1 && s.timed) {
+  if (![s.workSeconds, s.restSeconds, s.rounds].every(Number.isFinite)) return 'Enter valid round durations.';
   if (s.timed && (s.workSeconds < 15 || s.restSeconds < 0 || s.rounds < 1 || !Number.isInteger(s.rounds))) return 'Use at least one round, with 15 seconds or more of work.';
   if (s.timed && roundsSeconds({ workSeconds: s.workSeconds, restSeconds: s.restSeconds, count: s.rounds }) > (s.minutes - s.warmup - s.cooldown) * 60) return 'These rounds are longer than the main section. Reduce rounds or adjust the class length.';
-  if (s.bpm && (!/^\d+$/.test(s.bpm) || Number(s.bpm) < 40 || Number(s.bpm) > 240)) return 'Enter a target BPM from 40 to 240, or leave it on Choose for me.';
-  if (![s.minutes, s.warmup, s.cooldown].every(Number.isInteger)) return 'Use whole minutes for the class sections.';
-  if (s.cuesEnabled) for (const i of s.instructions) {
+  }
+  if (step === 3 && s.source === 'generate' && s.bpm && (!/^\d+$/.test(s.bpm) || Number(s.bpm) < 40 || Number(s.bpm) > 240)) return 'Enter a target BPM from 40 to 240, or leave it on Choose for me.';
+  if (step === 2 && s.cuesEnabled) for (const i of s.instructions) {
     if (i.sound === 'speech' && (!i.text.trim() || i.text.length > 240)) return 'Enter a spoken instruction of up to 240 characters, or remove the empty cue.';
     if ('seconds' in i.when && (!Number.isFinite(i.when.seconds) || i.when.seconds < (i.when.at === 'once' ? 0 : 5))) return 'Cue intervals must be at least 5 seconds.';
     if (['round_start', 'before_round_end', 'every_round'].includes(i.when.at) && (!s.timed || i.scope !== 'main')) return 'Round cues need timed rounds in the main section. Update or remove those cues.';

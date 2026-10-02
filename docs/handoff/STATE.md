@@ -1,6 +1,35 @@
-# Cadence — handoff state (2026-09-30)
+# Cadence — handoff state (2026-10-01)
 
 ## Current local update
+
+Instructor tutorial and usability pass: a four-card swipeable tutorial opens on
+the instructor's first visit after sign-in, once per user on this device. Skip
+and completion persist; Home has a replay button. The final action opens class
+creation. Tutorial text scrolls independently and Next/Back/card controls remain
+available without swiping. No native dependencies were added.
+
+Setup now restores its current step and Home identifies a saved draft. Common
+class lengths, round settings and cue intervals have shortcuts; custom section
+lengths, cue timing/location, BPM and lyrics remain available behind explicit
+Customize actions. Continue stays below the scrolling form and validates only
+the current step. Final creation validates all steps and opens the relevant
+settings on an error. Library tracks can be auditioned with a shared player;
+the setup shows actual class coverage and unfilled time before creation.
+
+Instructor-created classes open a simple Preview with direct edit actions
+instead of another five-step wizard. Each section opens its own music picker;
+name/length, sections, music, timing/cues, duplicate and Advanced edit remain
+available. Listening still saves first, now stated explicitly. Setup and editor
+navigation scroll back to the top. Existing guided-only classes retain their
+original workflow. Lint, typecheck and all 124 tests pass locally. The iOS
+JavaScript bundle exports successfully; this is not a signed device build.
+
+Still needs an iPhone check for swipe feel, keyboard reachability, larger text,
+audio preview and a complete Create-to-Start run. The app still cannot display
+remaining allowance because the service does not expose it through the current
+client. No paid music was generated during testing. The last attempted internal
+TestFlight build was blocked by Codemagic's outstanding billing issue; do not
+claim these changes have reached TestFlight until an upload is verified.
 
 Step 4 now shows a class-creation progress card with actual music coverage,
 per-section readiness, current service stage and request elapsed time. Progress

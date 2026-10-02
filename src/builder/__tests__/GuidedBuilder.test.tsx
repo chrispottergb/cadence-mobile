@@ -4,7 +4,7 @@ import { Alert } from 'react-native';
 
 import { GuidedBuilder } from '@/builder/GuidedBuilder';
 import { InstructorBuilder } from '@/builder/InstructorBuilder';
-import { defaultInstructorSettings } from '@/soundtrack/instructor';
+import { defaultInstructorSettings, proposeClass } from '@/soundtrack/instructor';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RunningClass } from '@/builder/RunningClass';
 import { MiniPlayer } from '@/playback/MiniPlayer';
@@ -110,6 +110,48 @@ beforeEach(() => {
 describe('Instructor setup', () => {
   beforeEach(async () => { await AsyncStorage.clear(); });
 
+  it('allows changing class length before fixing rounds, and restores the current step', async () => {
+    await AsyncStorage.setItem('instructor-class:v1:user-1:gym-1', JSON.stringify({ version: 1, settings: { ...defaultInstructorSettings(), timed: true, rounds: 8 } }));
+    const first = await renderSettled(<InstructorBuilder />);
+    expect(screen.queryByLabelText('Warm-up minutes')).toBeNull();
+    fireEvent.press(screen.getByText('Custom length'));
+    fireEvent.changeText(screen.getByLabelText('Class length in minutes'), '15');
+    fireEvent.press(screen.getByTestId('ic-next'));
+    expect(screen.getByText('2 of 4 · Timing')).toBeTruthy();
+    fireEvent.press(screen.getByTestId('ic-next'));
+    expect(screen.getByText(/These rounds are longer/)).toBeTruthy();
+    fireEvent.press(screen.getByText('Continuous practice'));
+    await act(async () => { fireEvent.press(screen.getByTestId('ic-next')); });
+    first.unmount();
+    await renderSettled(<InstructorBuilder />);
+    expect(screen.getByText('3 of 4 · Cues')).toBeTruthy();
+    fireEvent.press(screen.getByText('Add a cue or spoken instruction'));
+    fireEvent.press(screen.getByTestId('ic-next'));
+    expect(screen.getByText(/Enter a spoken instruction/)).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText('Spoken instruction 1'), 'Breathe');
+    fireEvent.press(screen.getByTestId('ic-next'));
+    expect(screen.getByText('4 of 4 · Music')).toBeTruthy();
+  });
+
+  it('keeps every editor available from a simple Preview and opens the selected section music', async () => {
+    await renderSettled(<GuidedBuilder initialPlan={proposeClass(defaultInstructorSettings())} initialLibrary={LIBRARY} />);
+    expect(screen.queryByTestId('gb-step-0')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Change music for Cooldown'));
+    expect(screen.getByText('Music for Cooldown')).toBeTruthy();
+    fireEvent.press(screen.getByTestId('picker-close'));
+    fireEvent.press(screen.getByTestId('gb-edit-1'));
+    fireEvent.press(screen.getByTestId('gb-section-0-minutes-minus'));
+    expect(screen.getByText('Done · Back to Preview')).toBeDisabled();
+    fireEvent.press(screen.getByTestId('gb-fix-extend'));
+    fireEvent.press(screen.getByText('Done · Back to Preview'));
+    for (const index of [0, 2, 3]) {
+      fireEvent.press(screen.getByTestId(`gb-edit-${index}`));
+      fireEvent.press(screen.getByText('Done · Back to Preview'));
+    }
+    fireEvent.press(screen.getByText('More class options'));
+    expect(screen.getByTestId('gb-advanced')).toBeTruthy();
+  });
+
   it('shows live Step 4 progress, preserves it on pause, and resumes the same job into Preview', async () => {
     jest.useFakeTimers();
     const music = jest.requireMock('@/music/client');
@@ -157,6 +199,7 @@ describe('Instructor setup', () => {
     fireEvent.press(screen.getByTestId('ic-next'));
     fireEvent.press(screen.getByText('Add a cue or spoken instruction'));
     fireEvent.changeText(screen.getByLabelText('Spoken instruction 1'), 'Keep your breathing steady');
+    fireEvent.press(screen.getByText('Customize cue timing and location'));
     fireEvent.press(screen.getByText('During each work round'));
     fireEvent.press(screen.getByTestId('ic-next'));
     fireEvent.press(screen.getByText(/Pad Work ·/));
@@ -194,6 +237,7 @@ describe('Instructor setup', () => {
     await act(async () => { fireEvent.press(screen.getByTestId('gb-save')); });
     const original = [...mockDb.keys()][0]!;
     const originalDoc = JSON.stringify(stored(original));
+    fireEvent.press(screen.getByText('More class options'));
     fireEvent.press(screen.getByText('Duplicate class'));
     await act(async () => { fireEvent.press(screen.getByTestId('gb-save')); });
     expect(mockDb.size).toBe(2);

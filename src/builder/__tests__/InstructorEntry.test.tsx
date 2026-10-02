@@ -3,6 +3,7 @@ import InstructorHome from '../../../app/(instructor)/index';
 import InstructorCreate from '../../../app/(instructor)/create';
 import { listMyGyms } from '@/data/gyms';
 import { listSoundtracks } from '@/data/soundtracks';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const mockRouter = { push: jest.fn(), back: jest.fn() };
 let mockFocus: () => (() => void) | void;
@@ -15,14 +16,26 @@ jest.mock('expo-router', () => {
 });
 jest.mock('@/data/gyms', () => ({ listMyGyms: jest.fn() }));
 jest.mock('@/data/soundtracks', () => ({ listSoundtracks: jest.fn() }));
+jest.mock('@/auth/session', () => ({ useSession: () => ({ session: { user: { id: 'user-1' } } }) }));
 const gyms = jest.mocked(listMyGyms);
 const classes = jest.mocked(listSoundtracks);
 const row = { id: 'class-1', gymId: 'gym-1', name: 'Tuesday Fundamentals', durationSeconds: 3600, revision: 1, updatedAt: '2026-09-30T12:00:00Z' };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await AsyncStorage.clear();
   jest.clearAllMocks();
   gyms.mockResolvedValue({ gyms: [{ id: 'gym-1', name: 'Gym', slug: 'gym', owner_profile_id: 'user' }], error: null });
   classes.mockResolvedValue({ rows: [row], error: null });
+});
+
+it('offers the saved draft on Home without hiding saved classes', async () => {
+  await AsyncStorage.setItem('instructor-class:v1:user-1:gym-1', '{}');
+  render(<InstructorHome />);
+  await act(async () => {});
+  fireEvent.press(screen.getByText('Continue creating your class'));
+  expect(mockRouter.push).toHaveBeenLastCalledWith('/soundtracks/new');
+  expect(screen.getByText('Tuesday Fundamentals')).toBeTruthy();
+  expect(screen.getByTestId('home-tutorial')).toBeTruthy();
 });
 
 it('the actual instructor home route opens creation, saved class edit/start and the library', async () => {
